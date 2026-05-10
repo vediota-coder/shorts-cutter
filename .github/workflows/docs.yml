@@ -1,0 +1,43 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'CHANGELOG.md'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install MkDocs
+        run: |
+          pip install mkdocs-material mkdocs-static-i18n
+
+      - name: Sync CHANGELOG
+        run: |
+          # Делаем ссылку из docs/changelog.md на корневой CHANGELOG.md
+          # (либо генерируем интегрированную версию)
+          echo "См. CHANGELOG.md в корне репозитория" > /tmp/changelog-stub
+          # docs/changelog.md уже содержит ссылку на github
+
+      - name: Build docs
+        run: mkdocs build --strict
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          cname: docs.excella.ru

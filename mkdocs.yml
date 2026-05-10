@@ -1,0 +1,63 @@
+site_name: excella shorts-cutter
+site_description: AI-инструмент для нарезки длинных видео на shorts
+site_url: https://docs.excella.ru
+repo_url: https://github.com/excella/shorts-cutter
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: ru
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: yellow
+      toggle:
+        icon: material/brightness-7
+        name: Тёмная тема
+    - scheme: slate
+      primary: indigo
+      accent: yellow
+      toggle:
+        icon: material/brightness-4
+        name: Светлая тема
+
+nav:
+  - Старт: index.md
+  - Quickstart: quickstart.md
+  - Установка:
+      - Docker: install/docker.md
+      - macOS / Linux: install/native.md
+      - Windows: install/windows.md
+  - Конфигурация: configuration.md
+  - Обновление: update.md
+  - Лицензия: licensing.md
+  - Troubleshooting: troubleshooting.md
+  - FAQ: faq.md
+  - API: api.md
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search:
+      lang: ru

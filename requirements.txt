@@ -1,0 +1,22 @@
+yt-dlp
+faster-whisper
+# опционально, под Apple Silicon: ускорение в ~10x
+mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"
+mediapipe
+opencv-python
+ffmpeg-python
+pydantic
+python-dotenv
+fastapi
+uvicorn[standard]
+python-multipart
+# LLM провайдеры (импортируются в src/llm/registry.py на module-level).
+# Если не используете какой-то — оставьте, конкретный API key проверяется на runtime.
+anthropic
+openai
+google-genai
+# YOLO + tracking (был в .venv, но не в requirements)
+ultralytics
+# python_speech_features нужен для LR-ASD MFCC
+python_speech_features
+scipy

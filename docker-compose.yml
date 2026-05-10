@@ -1,0 +1,38 @@
+services:
+  shorts-cutter:
+    build: .
+    image: excella/shorts-cutter:dev
+    container_name: excella-cutter
+    ports:
+      - "8000:8000"
+    volumes:
+      # Job state — переживает рестарты контейнера
+      - ./jobs:/app/jobs
+      - ./downloads:/app/downloads
+      - ./output:/app/output
+      # Brand assets — клиент может править свой brand JSON
+      - ./branding:/app/branding
+      # Лицензия и зашифрованные ассеты от excella init
+      - ~/.excella:/app/.excella
+      # MediaPipe models cache (~/.cache/mediapipe) — чтобы не качать на каждый рестарт
+      - mediapipe-cache:/root/.cache/mediapipe
+      # Whisper models cache (faster-whisper кэширует в HF cache)
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      # Dev mode для tamper detection (skip)
+      - EXCELLA_DEV=1
+      # Streaming analyze (Phase 1 #5) — opt-in пока default OFF
+      - EXCELLA_STREAMING_ANALYZE=1
+      # Лимит конкурентных pipeline'ов
+      - MAX_CONCURRENT_JOBS=2
+    deploy:
+      resources:
+        limits:
+          # На Mac Docker выделяет 2 GB по умолчанию — pipeline нужно >8.
+          # На Linux native limits игнорируются если не задано в host config.
+          memory: 12G
+    restart: unless-stopped
+
+volumes:
+  mediapipe-cache:
+  hf-cache:

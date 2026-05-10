@@ -1,0 +1,10 @@
+_keys/
+build/
+*.so
+*.c
+brand_kernel/_kernel.c
+dist/*.json
+dist/*.sig
+dist/*_assets/
+__pycache__/
+*.pyc

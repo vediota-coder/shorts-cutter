@@ -1,0 +1,2334 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>shorts-cutter</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  .bar-indeterminate {
+    background-image: linear-gradient(90deg,
+      rgba(99,102,241,0.3) 0%,
+      rgba(99,102,241,0.9) 50%,
+      rgba(99,102,241,0.3) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: #818cf8;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+<div class="max-w-4xl mx-auto px-4 py-10">
+  <div class="flex justify-between items-start mb-2">
+    <h1 class="text-3xl font-bold">shorts-cutter</h1>
+    <div class="flex gap-2">
+      <button id="open-dashboard" class="text-slate-400 hover:text-white text-sm border border-slate-700 rounded-lg px-3 py-1.5">
+        📊 Метрики
+      </button>
+      <button id="open-brands" class="text-slate-400 hover:text-white text-sm border border-slate-700 rounded-lg px-3 py-1.5">
+        🎨 Бренды
+      </button>
+      <button id="open-settings" class="text-slate-400 hover:text-white text-sm border border-slate-700 rounded-lg px-3 py-1.5">
+        ⚙ Настройки
+      </button>
+    </div>
+  </div>
+  <p class="text-slate-400 mb-2">Длинное видео → вертикальные шортсы 9:16 с face tracking и субтитрами.</p>
+  <div id="backend-info" class="text-sm text-slate-500 mb-8">определяю железо…</div>
+
+  <div id="dashboard-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-5xl w-full p-6 max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold">📊 Метрики публикаций</h2>
+        <button id="close-dashboard" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+      <div class="flex items-center gap-3 mb-4">
+        <button id="dashboard-refresh-current" type="button" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
+          ↻ Обновить текущий job
+        </button>
+        <span id="dashboard-info" class="text-xs text-slate-400"></span>
+      </div>
+      <div id="dashboard-totals" class="mb-4"></div>
+      <div id="dashboard-table" class="overflow-x-auto"></div>
+    </div>
+  </div>
+
+  <div id="brands-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full p-6 max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold">🎨 Бренды и CTA</h2>
+        <button id="close-brands" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+
+      <div class="flex flex-col md:flex-row gap-4">
+        <div class="md:w-48">
+          <div class="text-xs text-slate-400 mb-2">Бренды</div>
+          <div id="brand-list" class="space-y-1"></div>
+          <button id="brand-new" class="mt-3 w-full px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">+ Новый бренд</button>
+        </div>
+
+        <div id="brand-editor" class="flex-1 hidden">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <div class="text-xs text-slate-400">Бренд</div>
+              <div class="text-lg font-semibold" id="be-name"></div>
+            </div>
+            <button id="be-delete" class="text-rose-400 hover:text-rose-300 text-sm">Удалить бренд</button>
+          </div>
+
+          <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm">
+            <summary class="cursor-pointer font-medium">📡 Публикация — Instagram Reels</summary>
+            <div class="mt-3 space-y-2">
+              <div id="be-ig-status" class="text-slate-400 text-xs">проверяю…</div>
+              <details class="bg-slate-900 rounded p-2 text-xs">
+                <summary class="cursor-pointer">Как получить токен (требует Business аккаунт)</summary>
+                <ol class="list-decimal pl-5 mt-2 space-y-1 text-slate-300">
+                  <li>Instagram → переключи аккаунт на <b>Бизнес</b> или <b>Автор</b></li>
+                  <li>Свяжи с Facebook Page</li>
+                  <li>Создай приложение на
+                    <a href="https://developers.facebook.com/apps" target="_blank" class="text-indigo-400 underline">developers.facebook.com/apps</a>
+                    → добавь продукт «Instagram Graph API»</li>
+                  <li>В Graph API Explorer получи User Token со scope
+                    <code class="text-[10px]">instagram_basic, instagram_content_publish, pages_read_engagement, pages_show_list, business_management</code></li>
+                  <li>Обменяй на long-lived (живёт ~60 дней) через
+                    <code class="text-[10px]">/oauth/access_token?grant_type=fb_exchange_token</code></li>
+                  <li>Получи IG User ID:
+                    <code class="text-[10px]">/me/accounts</code> → найди page → <code class="text-[10px]">/{page-id}?fields=instagram_business_account</code></li>
+                </ol>
+                <div class="text-amber-400 mt-2">
+                  ⚠ IG требует ПУБЛИЧНЫЙ URL для видео. На локалке нужен туннель —
+                  <a href="https://cloudflared.cloudflare.com" target="_blank" class="text-indigo-400 underline">cloudflared</a>
+                  или <a href="https://ngrok.com" target="_blank" class="text-indigo-400 underline">ngrok</a>.
+                </div>
+              </details>
+              <input id="be-ig-token" type="password" placeholder="EAAB... long-lived access_token" autocomplete="off"
+                     class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-mono">
+              <input id="be-ig-userid" type="text" placeholder="Instagram User ID (например 17841...)"
+                     class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-mono">
+              <input id="be-ig-public" type="url" placeholder="Публичный URL сервера, например https://abc123.ngrok.app"
+                     class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs">
+              <div class="flex gap-2">
+                <button type="button" id="be-ig-connect" class="px-3 py-1.5 rounded bg-pink-600 hover:bg-pink-500 text-xs font-medium">Сохранить</button>
+                <button type="button" id="be-ig-disconnect" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-xs hidden">Отключить</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm">
+            <summary class="cursor-pointer font-medium">📡 Публикация — ВКонтакте</summary>
+            <div class="mt-3 space-y-2">
+              <div id="be-vk-status" class="text-slate-400 text-xs">проверяю…</div>
+              <details class="bg-slate-900 rounded p-2 text-xs">
+                <summary class="cursor-pointer">Как получить токен (2 шага)</summary>
+                <ol class="list-decimal pl-5 mt-2 space-y-1 text-slate-300">
+                  <li>Открой
+                    <a href="https://vkhost.github.io" target="_blank" class="text-indigo-400 underline">vkhost.github.io</a>
+                    → выбери «Kate Mobile» или другой клиент → авторизуйся</li>
+                  <li>В адресной строке после редиректа найди <code>access_token=...</code> — скопируй значение</li>
+                </ol>
+                <div class="text-slate-400 mt-2">
+                  Альтернатива: создать своё приложение на
+                  <a href="https://vk.com/apps?act=manage" target="_blank" class="text-indigo-400 underline">vk.com/apps?act=manage</a>
+                  (Standalone) → Implicit Flow со scope <code>video,offline,groups</code>
+                </div>
+              </details>
+              <input id="be-vk-token" type="password" placeholder="vk1.a.access_token..." autocomplete="off"
+                     class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-mono">
+              <input id="be-vk-target" type="number" placeholder="ID группы со знаком минус (например -123) или 0 = личная страница"
+                     class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs">
+              <input id="be-vk-target-name" type="text" placeholder="Подпись (например 'Канал Excella')"
+                     class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs">
+              <div class="flex gap-2">
+                <button type="button" id="be-vk-connect" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-xs font-medium">Сохранить токен</button>
+                <button type="button" id="be-vk-disconnect" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-xs hidden">Отключить</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm" open>
+            <summary class="cursor-pointer font-medium">📡 Публикация — YouTube</summary>
+            <div class="mt-3 space-y-2">
+              <div id="be-yt-status" class="text-slate-400 text-xs">проверяю…</div>
+              <details class="bg-slate-900 rounded p-2 text-xs">
+                <summary class="cursor-pointer">Как настроить (3 шага)</summary>
+                <ol class="list-decimal pl-5 mt-2 space-y-1 text-slate-300">
+                  <li>Зайди на
+                    <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" class="text-indigo-400 underline">YouTube Data API v3</a> → Включить</li>
+                  <li><a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-indigo-400 underline">Credentials</a> →
+                    Create OAuth Client ID → <b>Desktop app</b> → Download JSON</li>
+                  <li>Загрузи JSON ниже → нажми «Подключить»</li>
+                </ol>
+              </details>
+              <input type="file" id="be-yt-secrets" accept=".json"
+                     class="w-full text-xs file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-slate-700 file:text-white">
+              <div class="flex gap-2">
+                <button type="button" id="be-yt-connect" class="px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-xs font-medium">Подключить</button>
+                <button type="button" id="be-yt-disconnect" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-xs hidden">Отключить</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm" open>
+            <summary class="cursor-pointer font-medium">Идентичность бренда</summary>
+            <div class="mt-3 space-y-2">
+              <div>
+                <div class="text-xs text-slate-400 mb-1">Ссылка для лидов (UTM в описаниях)</div>
+                <input id="be-lead-url" type="url" placeholder="https://excella.ru" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+              </div>
+              <div>
+                <div class="text-xs text-slate-400 mb-1">Ниша</div>
+                <input id="be-niche" type="text" placeholder="B2B SaaS" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+              </div>
+              <div>
+                <div class="text-xs text-slate-400 mb-1">Целевая аудитория</div>
+                <input id="be-audience" type="text" placeholder="founders e-com 1-50 чел" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+              </div>
+              <div>
+                <div class="text-xs text-slate-400 mb-1">Голос бренда (как говорим)</div>
+                <input id="be-voice" type="text" placeholder="экспертный, без воды, с цифрами" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+              </div>
+            </div>
+          </details>
+
+          <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm">
+            <summary class="cursor-pointer font-medium">Логотип (watermark)</summary>
+            <div class="mt-3 space-y-2">
+              <div id="be-wm-preview" class="text-slate-400 text-xs">не задан</div>
+              <input type="file" id="be-wm-file" accept="image/png,image/jpeg,image/webp"
+                     class="w-full text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-indigo-600 file:text-white">
+              <div class="grid grid-cols-2 gap-2">
+                <select id="be-wm-pos" class="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                  <option value="top-left">↖ верх-лево</option>
+                  <option value="top-right">↗ верх-право</option>
+                  <option value="bottom-left">↙ низ-лево</option>
+                  <option value="bottom-right">↘ низ-право</option>
+                </select>
+                <input id="be-wm-opacity" type="number" step="0.05" min="0" max="1" value="0.7"
+                       class="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm" placeholder="прозр. 0-1">
+              </div>
+              <button type="button" id="be-wm-delete" class="text-rose-400 hover:text-rose-300 text-xs">удалить логотип</button>
+            </div>
+          </details>
+
+          <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm" open>
+            <summary class="cursor-pointer font-medium">🧑 Лицо в углу (для reaction-формата)</summary>
+            <div class="mt-3 space-y-2">
+              <div id="be-face-preview" class="text-slate-400 text-xs">не задан</div>
+              <input type="file" id="be-face-file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime"
+                     class="w-full text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-indigo-600 file:text-white">
+              <p class="text-xs text-slate-500">PNG/JPG (статика) или MP4/MOV (видео-цикл, например ты молча мимикрируешь). Студийный кадр на однотонном фоне даст лучший круг.</p>
+              <div class="grid grid-cols-3 gap-2">
+                <select id="be-face-pos" class="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs">
+                  <option value="top-left">↖ верх-лево</option>
+                  <option value="top-right">↗ верх-право</option>
+                  <option value="bottom-left">↙ низ-лево</option>
+                  <option value="bottom-right">↘ низ-право</option>
+                </select>
+                <label class="flex flex-col text-xs">
+                  <span class="text-slate-500">размер (% ширины)</span>
+                  <input id="be-face-scale" type="number" step="0.02" min="0.1" max="0.5" value="0.22" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm">
+                </label>
+                <label class="flex items-center gap-1 text-xs mt-3">
+                  <input id="be-face-circle" type="checkbox" checked class="accent-indigo-500">
+                  <span class="text-slate-400">круглый</span>
+                </label>
+              </div>
+              <button type="button" id="be-face-delete" class="text-rose-400 hover:text-rose-300 text-xs">удалить</button>
+            </div>
+          </details>
+
+          <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm">
+            <summary class="cursor-pointer font-medium">Нижняя плашка</summary>
+            <div class="mt-3 space-y-2">
+              <label class="flex items-center gap-2"><input type="checkbox" id="be-bs-enabled" class="accent-indigo-500"> показывать плашку</label>
+              <input id="be-bs-text" type="text" placeholder="excella.ru" class="set-field w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+              <div class="grid grid-cols-3 gap-2">
+                <input id="be-bs-color" type="text" placeholder="#FFFFFF" class="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                <input id="be-bs-bg" type="text" placeholder="#1E1B4B" class="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                <input id="be-bs-size" type="number" min="20" max="80" placeholder="36" class="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm">
+              </div>
+            </div>
+          </details>
+
+          <div class="bg-slate-800 rounded-lg p-3 mb-3">
+            <div class="flex items-center justify-between mb-3">
+              <div class="font-medium text-sm">CTA пресеты</div>
+              <button id="be-cta-add" class="text-indigo-400 hover:text-indigo-300 text-sm">+ добавить</button>
+            </div>
+            <div id="be-cta-list" class="space-y-2"></div>
+          </div>
+
+          <div class="flex gap-2 sticky bottom-0 bg-slate-900 pt-3 border-t border-slate-800">
+            <button id="be-save" class="flex-1 bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 rounded-lg font-medium">Сохранить</button>
+            <button id="be-cancel" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Отмена</button>
+          </div>
+          <div id="be-feedback" class="hidden text-sm mt-2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full p-6 max-h-[90vh] overflow-y-auto">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold">Настройки</h2>
+        <button id="close-settings" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+
+      <h3 class="font-semibold mb-2">📝 Промпты для Claude/GPT/Gemini</h3>
+      <p class="text-sm text-slate-400 mb-3">
+        System-промпты для выбора моментов и SEO-метаданных. Меняй под свою нишу/голос.
+        Дефолт восстанавливается кнопкой «Сбросить».
+      </p>
+      <div id="prompts-editor" class="space-y-3 mb-4"></div>
+
+      <h3 class="font-semibold mb-2">🎙 ElevenLabs API (озвучка/дубляж)</h3>
+      <p class="text-sm text-slate-400 mb-3">
+        Ключ для синтеза речи и Dubbing API. Получить:
+        <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" class="text-indigo-400 underline">
+          elevenlabs.io/app/settings/api-keys</a>.
+        Free план — TTS до 10к симв/мес. Для clone-дубляжа (голос оригинала) нужен Pro ($99/мес).
+      </p>
+      <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm">
+        <summary class="cursor-pointer font-medium">Как получить ключ (3 шага)</summary>
+        <ol class="list-decimal pl-5 mt-3 space-y-2 text-slate-300">
+          <li>Зарегистрируйся на
+            <a href="https://elevenlabs.io" target="_blank" class="text-indigo-400 underline">elevenlabs.io</a>
+            (можно через Google).</li>
+          <li>Открой
+            <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" class="text-indigo-400 underline">
+              Settings → API Keys</a>
+            и нажми <b>Create API Key</b>. Имя любое — например <code>shorts-cutter</code>.</li>
+          <li>Скопируй строку <code>sk_…</code> и вставь сюда ⬇</li>
+        </ol>
+        <p class="mt-3 text-slate-400">
+          Хранится локально в <code>.env</code>, никуда не уходит. Кнопка «Проверить» делает probe-запрос
+          к API и показывает твой план + доступ к Dubbing API.
+        </p>
+      </details>
+      <input id="elevenlabs-input" type="password" autocomplete="off" placeholder="sk_..."
+             class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm mb-2">
+      <div class="flex items-center justify-between mb-2">
+        <span id="elevenlabs-status" class="text-sm text-slate-400">проверяю…</span>
+        <div class="flex gap-2">
+          <button id="elevenlabs-check" type="button" class="px-3 py-1.5 text-sm rounded-lg bg-slate-800 hover:bg-slate-700">Проверить</button>
+          <button id="elevenlabs-clear" type="button" class="px-3 py-1.5 text-sm rounded-lg bg-slate-800 hover:bg-slate-700">Удалить</button>
+          <button id="elevenlabs-save" type="button" class="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Сохранить</button>
+        </div>
+      </div>
+      <div id="elevenlabs-probe" class="hidden bg-slate-800 rounded-lg p-2 text-xs mb-4"></div>
+
+      <h3 class="font-semibold mb-2">🎬 Pexels API (B-roll)</h3>
+      <p class="text-sm text-slate-400 mb-3">
+        Ключ для поиска стоковых видео-вставок (B-roll).
+        Получить: <a href="https://www.pexels.com/api/" target="_blank" class="text-indigo-400 underline">pexels.com/api</a>
+        — бесплатно, 200 запросов в час.
+      </p>
+      <input id="pexels-input" type="password" autocomplete="off" placeholder="563492ad..."
+             class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm mb-2">
+      <div class="flex items-center justify-between mb-4">
+        <span id="pexels-status" class="text-sm text-slate-400">проверяю…</span>
+        <div class="flex gap-2">
+          <button id="pexels-clear" class="px-3 py-1.5 text-sm rounded-lg bg-slate-800 hover:bg-slate-700">Удалить</button>
+          <button id="pexels-save" class="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Сохранить</button>
+        </div>
+      </div>
+
+      <h3 class="font-semibold mb-2">📊 Статистика коррекций (self-improvement)</h3>
+      <p class="text-sm text-slate-400 mb-3">
+        Анализ ваших правок в Smart reframe: что чаще всего исправляет человек —
+        там и есть слабое место classifier'а. На основе паттернов даём подсказки по тюнингу.
+      </p>
+      <button id="open-improvement" type="button" class="px-3 py-1.5 mb-4 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">📊 Показать статистику</button>
+      <div id="improvement-output" class="hidden mb-4 bg-slate-800 rounded-lg p-3 text-sm"></div>
+
+      <h3 class="font-semibold mb-2">HuggingFace токен</h3>
+      <p class="text-sm text-slate-400 mb-3">
+        Нужен, чтобы быстро скачивать модели Whisper. Без токена скорость ~1 MB/s,
+        с токеном — 10+ MB/s. Бесплатно, занимает 1 минуту.
+      </p>
+
+      <details class="bg-slate-800 rounded-lg p-3 mb-3 text-sm">
+        <summary class="cursor-pointer font-medium">Как получить токен (3 шага)</summary>
+        <ol class="list-decimal pl-5 mt-3 space-y-2 text-slate-300">
+          <li>Зарегистрируйся (или войди) на
+            <a href="https://huggingface.co/join" target="_blank" class="text-indigo-400 underline">huggingface.co</a>.
+            Можно через GitHub/Google.</li>
+          <li>Открой
+            <a href="https://huggingface.co/settings/tokens" target="_blank" class="text-indigo-400 underline">
+              huggingface.co/settings/tokens</a>
+            и нажми <b>«+ Create new token»</b>.</li>
+          <li>Тип токена: <b>Read</b> (этого достаточно). Имя любое — например <code>shorts-cutter</code>.
+            Нажми «Create token», скопируй строку <code>hf_…</code> и вставь сюда ⬇</li>
+        </ol>
+        <p class="mt-3 text-slate-400">
+          Токен хранится только локально (в файле <code>.env</code> с правами 600), никуда не уходит.
+        </p>
+      </details>
+
+      <div class="space-y-2">
+        <input id="hf-token-input" type="password" autocomplete="off" placeholder="hf_..."
+               class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:border-indigo-500">
+        <div class="flex items-center justify-between">
+          <span id="hf-status" class="text-sm text-slate-400">проверяю…</span>
+          <div class="flex gap-2">
+            <button id="hf-clear" class="px-3 py-1.5 text-sm rounded-lg bg-slate-800 hover:bg-slate-700">Удалить</button>
+            <button id="hf-save" class="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Сохранить</button>
+          </div>
+        </div>
+        <div id="hf-feedback" class="text-sm hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <form id="job-form" class="bg-slate-900 rounded-2xl p-6 space-y-4 border border-slate-800">
+    <div>
+      <label class="block text-sm font-medium mb-1">URL (YouTube / VK)</label>
+      <input id="url" name="url" type="url" placeholder="https://youtube.com/... или https://vk.com/video..."
+             class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
+    </div>
+    <div class="text-center text-slate-500 text-sm">— или —</div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Файл</label>
+      <input id="file" name="file" type="file" accept="video/*"
+             class="w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white hover:file:bg-indigo-500">
+    </div>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium mb-1">Макс клипов</label>
+        <input id="max_clips" name="max_clips" type="number" value="8" min="1" max="20"
+               class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+      </div>
+      <div>
+        <label class="block text-sm font-medium mb-1">Whisper модель</label>
+        <select id="whisper_model" name="whisper_model"
+                class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
+          <option value="auto" selected>auto (под железо)</option>
+          <option>tiny</option><option>base</option><option>small</option>
+          <option>medium</option><option>large-v3</option><option>large-v3-turbo</option>
+        </select>
+      </div>
+    </div>
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+      <summary class="cursor-pointer text-sm font-medium">⚙ Скачивание и качество выхода</summary>
+      <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Скачать макс.</label>
+          <select id="download_max_height" name="download_max_height" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+            <option value="1080" selected>1080p</option>
+            <option value="720">720p (быстрее)</option>
+            <option value="480">480p</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Cookies (обход троттлинга)</label>
+          <select id="download_cookies_browser" name="download_cookies_browser" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+            <option value="" selected>не использовать</option>
+            <option value="chrome">Chrome</option>
+            <option value="safari">Safari</option>
+            <option value="firefox">Firefox</option>
+            <option value="edge">Edge</option>
+            <option value="brave">Brave</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Размер выхода (9:16)</label>
+          <select id="output_size" name="output_size" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+            <option value="native" selected>auto (как исходник, без upscale)</option>
+            <option value="1080">1080p (если исходник позволяет)</option>
+            <option value="720">720p</option>
+            <option value="480">480p</option>
+          </select>
+        </div>
+      </div>
+      <p class="text-xs text-slate-500 mt-2">
+        💡 «auto» — выход в native-разрешении, без растягивания. Если скачали 360p,
+        выход будет 360p. Это даёт чистую картинку без артефактов upscale.
+      </p>
+    </details>
+
+    <div>
+      <label class="block text-sm font-medium mb-1">Стиль субтитров</label>
+      <div id="sub-templates" class="grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+      <input type="hidden" id="sub_template" name="sub_template" value="block">
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">🤖 LLM провайдер (для выбора моментов и SEO-описаний)</label>
+      <div id="llm-providers" class="grid grid-cols-1 md:grid-cols-2 gap-2"></div>
+      <input type="hidden" id="llm_provider" name="llm_provider" value="">
+      <input type="hidden" id="llm_model" name="llm_model" value="">
+      <div class="mt-2 flex items-center gap-2">
+        <span class="text-xs text-slate-400">Модель:</span>
+        <select id="llm-model-select" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs"></select>
+      </div>
+    </div>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+      <summary class="cursor-pointer text-sm font-medium">🎙 Озвучка / дубляж (ElevenLabs)</summary>
+      <div class="mt-3 space-y-3">
+        <label class="flex items-center gap-2 text-sm">
+          <input id="voiceover" name="voiceover" type="checkbox" value="true"
+                 class="rounded border-slate-600 bg-slate-800"
+                 onchange="document.getElementById('vo-body').classList.toggle('hidden', !this.checked)">
+          Включить дубляж (для англоязычных видео)
+        </label>
+        <div id="vo-body" class="hidden space-y-3">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Движок дубляжа</label>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <label class="flex items-start gap-2 bg-slate-800 border border-slate-700 rounded-lg p-2 cursor-pointer">
+                <input type="radio" name="voiceover_engine" value="clone" class="mt-1"
+                       onchange="document.getElementById('vo-library-only').classList.add('opacity-40')">
+                <div class="text-xs">
+                  <div class="font-semibold text-slate-200">Clone — Dubbing API ⭐</div>
+                  <div class="text-slate-400">Голос ОРИГИНАЛЬНОГО спикера, эмоции и тайминг 1:1.
+                    Дороже (~$0.30/мин), нужен Pro plan.</div>
+                </div>
+              </label>
+              <label class="flex items-start gap-2 bg-slate-800 border border-slate-700 rounded-lg p-2 cursor-pointer">
+                <input type="radio" name="voiceover_engine" value="library" class="mt-1" checked
+                       onchange="document.getElementById('vo-library-only').classList.remove('opacity-40')">
+                <div class="text-xs">
+                  <div class="font-semibold text-slate-200">Library — TTS из библиотеки</div>
+                  <div class="text-slate-400">Голос из готовой библиотеки + emotion tags на v3.
+                    Дешевле (~$0.12/клип).</div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div id="vo-library-only" class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Режим (library)</label>
+              <select id="voiceover_mode" name="voiceover_mode"
+                      class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                <option value="duck" selected>duck — оригинал тише на -20dB</option>
+                <option value="replace">replace — полностью заменить</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Голос (library)</label>
+              <select id="voiceover_voice" name="voiceover_voice"
+                      class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                <option value="EXAVITQu4vr4xnSDxMaL" selected>Sarah (женский, нейтральный)</option>
+                <option value="JBFqnCBsd6RMkjVDRZzb">George (мужской, спокойный)</option>
+                <option value="TX3LPaxmHKxFdv7VOQHJ">Liam (мужской, энергичный)</option>
+                <option value="XB0fDUnXU5powFXDhCwa">Charlotte (женский, тёплый)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Модель TTS (library)</label>
+              <select id="voiceover_model" name="voiceover_model"
+                      class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+                <option value="eleven_v3" selected>v3 ⭐ (GA фев'26, emotion tags, 70+ языков)</option>
+                <option value="eleven_multilingual_v2">Multilingual v2 (стабильный, без тегов)</option>
+                <option value="eleven_flash_v2_5">Flash v2.5 ($60/1M симв, быстрый)</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Целевой язык</label>
+            <select id="voiceover_target_lang" name="voiceover_target_lang"
+                    class="w-full md:w-48 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+              <option value="ru" selected>русский</option>
+              <option value="en">english</option>
+              <option value="es">español</option>
+              <option value="de">deutsch</option>
+              <option value="fr">français</option>
+              <option value="zh">中文</option>
+            </select>
+          </div>
+          <p class="text-xs text-slate-500">
+            💡 Clone дублирует видео <em>один раз</em> до нарезки — на каждый шортс приходит уже с целевой
+            дорожкой. Library синтезирует TTS на лету для каждого клипа. Нужен ELEVENLABS_API_KEY в .env.
+          </p>
+        </div>
+      </div>
+    </details>
+
+    <div>
+      <label class="block text-sm font-medium mb-1">CTA в конце клипа</label>
+      <div id="cta-presets" class="grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+      <input type="hidden" id="cta" name="cta" value="demo">
+      <input type="hidden" id="brand" name="brand" value="excella">
+    </div>
+    <button type="submit"
+            class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-lg transition">
+      Нарезать
+    </button>
+  </form>
+
+  <section id="progress-section" class="hidden mt-8 bg-slate-900 rounded-2xl p-6 border border-slate-800">
+    <div class="flex items-center justify-between mb-2">
+      <span id="stage-label" class="font-medium"><span class="spinner hidden" data-spinner></span>старт</span>
+      <span class="text-slate-400 text-sm">
+        <span id="pct-label">0%</span>
+        <span id="eta-label" class="ml-2"></span>
+      </span>
+    </div>
+    <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
+      <div id="bar" class="h-full bg-indigo-500 transition-all" style="width:0%"></div>
+    </div>
+    <pre id="log" class="mt-4 text-xs text-slate-400 max-h-48 overflow-y-auto whitespace-pre-wrap"></pre>
+  </section>
+
+  <section id="recent-jobs" class="hidden mt-6">
+    <h2 class="text-base font-medium mb-2 text-slate-300">📁 Последние задания</h2>
+    <div id="jobs-list" class="grid grid-cols-1 md:grid-cols-2 gap-2"></div>
+  </section>
+
+  <section id="results" class="hidden mt-8">
+    <h2 class="text-xl font-semibold mb-4">Готовые клипы</h2>
+    <div id="clips" class="grid gap-4"></div>
+  </section>
+</div>
+
+<script>
+const form = document.getElementById('job-form');
+const progSec = document.getElementById('progress-section');
+const bar = document.getElementById('bar');
+const stageLabel = document.getElementById('stage-label');
+const pctLabel = document.getElementById('pct-label');
+const etaLabel = document.getElementById('eta-label');
+const logEl = document.getElementById('log');
+let lastProgressMove = Date.now();
+let lastPct = 0;
+setInterval(() => {
+  const sp = document.querySelector('[data-spinner]');
+  const stalled = (Date.now() - lastProgressMove) > 4000;
+  const inProgress = !bar.classList.contains('bg-rose-500') && lastPct > 0 && lastPct < 100;
+  if (stalled && inProgress) {
+    bar.classList.add('bar-indeterminate');
+    sp && sp.classList.remove('hidden');
+  } else {
+    bar.classList.remove('bar-indeterminate');
+    sp && sp.classList.add('hidden');
+  }
+}, 500);
+const resultsSec = document.getElementById('results');
+const clipsEl = document.getElementById('clips');
+
+// ─── Dashboard ───
+const dashboardModal = document.getElementById('dashboard-modal');
+document.getElementById('open-dashboard').onclick = () => {
+  dashboardModal.classList.remove('hidden');
+  loadDashboard();
+};
+document.getElementById('close-dashboard').onclick = () => dashboardModal.classList.add('hidden');
+dashboardModal.onclick = (e) => { if (e.target === dashboardModal) dashboardModal.classList.add('hidden'); };
+
+let CURRENT_JOB_ID = null;
+
+document.getElementById('dashboard-refresh-current').onclick = async () => {
+  if (!CURRENT_JOB_ID) {
+    alert('Нет активного job — сначала запусти нарезку');
+    return;
+  }
+  const btn = document.getElementById('dashboard-refresh-current');
+  btn.disabled = true;
+  const info = document.getElementById('dashboard-info');
+  info.textContent = '⏳ опрашиваем YT/VK/IG…';
+  try {
+    const r = await fetch(`/jobs/${CURRENT_JOB_ID}/metrics/refresh`, {method: 'POST'});
+    if (!r.ok) {
+      info.textContent = '❌ ошибка: ' + r.status;
+      return;
+    }
+    info.textContent = '✓ обновлено ' + new Date().toLocaleTimeString();
+    await loadDashboard();
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+async function loadDashboard() {
+  const r = await fetch('/dashboard/all').then(r => r.json());
+  const totalsEl = document.getElementById('dashboard-totals');
+  const tableEl = document.getElementById('dashboard-table');
+  if (!r.rows || !r.rows.length) {
+    tableEl.innerHTML = '<div class="text-slate-400 text-sm">Нет опубликованных клипов</div>';
+    totalsEl.innerHTML = '';
+    return;
+  }
+  // тоталы
+  const t = r.totals || {};
+  totalsEl.innerHTML = `
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+      <div class="bg-slate-800 rounded-lg p-3"><div class="text-xs text-slate-400">Всего просмотров</div><div class="text-2xl font-bold">${(t.views||0).toLocaleString()}</div></div>
+      <div class="bg-slate-800 rounded-lg p-3"><div class="text-xs text-slate-400">Лайков</div><div class="text-2xl font-bold">${(t.likes||0).toLocaleString()}</div></div>
+      <div class="bg-slate-800 rounded-lg p-3"><div class="text-xs text-slate-400">Комментариев</div><div class="text-2xl font-bold">${(t.comments||0).toLocaleString()}</div></div>
+    </div>`;
+  // таблица
+  const headers = ['Клип', 'Бренд', 'YouTube', 'ВК', 'Instagram', 'Σ просмотры'];
+  const rows = r.rows.map(row => {
+    const m = row.metrics || {};
+    const yt = m.youtube || {};
+    const vk = m.vk || {};
+    const ig = m.instagram || {};
+    const totalViews = (yt.views || 0) + (vk.views || 0) + (ig.views || 0);
+    function cell(plat, link, stats) {
+      if (!link) return '<span class="text-slate-600">—</span>';
+      const v = stats?.views ?? '?';
+      const l = stats?.likes ?? '?';
+      return `<a href="${link}" target="_blank" class="text-indigo-400 hover:underline">${v}👁 / ${l}❤</a>`;
+    }
+    return `<tr class="border-b border-slate-800">
+      <td class="px-2 py-2 text-sm" title="${escapeHtmlSimple(row.job_id)} / clip ${row.clip_index}">${escapeHtmlSimple(row.title.slice(0, 50))}${row.title.length > 50 ? '…' : ''}</td>
+      <td class="px-2 py-2 text-xs text-slate-400">${escapeHtmlSimple(row.brand)}</td>
+      <td class="px-2 py-2 text-sm">${cell('youtube', row.publications?.youtube?.url, yt)}</td>
+      <td class="px-2 py-2 text-sm">${cell('vk', row.publications?.vk?.url, vk)}</td>
+      <td class="px-2 py-2 text-sm">${cell('instagram', row.publications?.instagram?.url, ig)}</td>
+      <td class="px-2 py-2 text-sm font-medium text-right">${totalViews.toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+  tableEl.innerHTML = `
+    <table class="w-full text-sm">
+      <thead><tr class="border-b border-slate-700 text-xs text-slate-400">
+        ${headers.map(h => `<th class="px-2 py-2 text-left">${h}</th>`).join('')}
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ─── Бренды ───
+const brandsModal = document.getElementById('brands-modal');
+document.getElementById('open-brands').onclick = () => { brandsModal.classList.remove('hidden'); refreshBrandList(); };
+document.getElementById('close-brands').onclick = () => brandsModal.classList.add('hidden');
+brandsModal.onclick = (e) => { if (e.target === brandsModal) brandsModal.classList.add('hidden'); };
+
+let CURRENT_BRAND = null;  // данные текущего бренда в редакторе
+
+async function refreshBrandList(selectName = null) {
+  const list = await fetch('/brands').then(r => r.json());
+  const ul = document.getElementById('brand-list');
+  ul.innerHTML = '';
+  list.forEach(b => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'w-full text-left px-3 py-2 rounded-lg text-sm bg-slate-800 hover:bg-slate-700';
+    btn.textContent = b.name;
+    btn.onclick = () => loadBrandIntoEditor(b.name);
+    ul.appendChild(btn);
+  });
+  if (list.length) {
+    loadBrandIntoEditor(selectName || list[0].name);
+  }
+}
+
+async function loadBrandIntoEditor(name) {
+  const b = await fetch(`/brands/${name}`).then(r => r.json());
+  CURRENT_BRAND = b;
+  document.getElementById('brand-editor').classList.remove('hidden');
+  document.getElementById('be-name').textContent = name;
+  // удаление доступно для всех — если удалить все бренды, дефолтный пересоздастся при следующем запуске
+
+  const wmPrev = document.getElementById('be-wm-preview');
+  if (b.watermark_path) {
+    wmPrev.textContent = `файл: ${b.watermark_path.split('/').pop()}`;
+  } else {
+    wmPrev.textContent = 'не задан';
+  }
+  refreshYTStatus(name);
+  refreshVKStatus(name);
+  refreshIGStatus(name);
+  document.getElementById('be-lead-url').value = b.lead_url || '';
+  document.getElementById('be-niche').value = b.niche || '';
+  document.getElementById('be-audience').value = b.target_audience || '';
+  document.getElementById('be-voice').value = b.brand_voice || '';
+  document.getElementById('be-wm-pos').value = b.watermark_position;
+  document.getElementById('be-wm-opacity').value = b.watermark_opacity;
+
+  // face overlay
+  const facePrev = document.getElementById('be-face-preview');
+  if (b.face_overlay_path) {
+    facePrev.innerHTML = `✓ файл: <code class="text-emerald-400">${escapeHtmlSimple(b.face_overlay_path.split('/').pop())}</code>`;
+  } else {
+    facePrev.textContent = 'не задан';
+  }
+  document.getElementById('be-face-pos').value = b.face_overlay_position || 'bottom-left';
+  document.getElementById('be-face-scale').value = b.face_overlay_scale ?? 0.22;
+  document.getElementById('be-face-circle').checked = b.face_overlay_circle !== false;
+
+  const bs = b.bottom_strip;
+  document.getElementById('be-bs-enabled').checked = !!bs;
+  document.getElementById('be-bs-text').value = bs ? bs.text : 'excella.ru';
+  document.getElementById('be-bs-color').value = bs ? bs.color : '#FFFFFF';
+  document.getElementById('be-bs-bg').value = bs ? bs.bg_color : '#1E1B4B';
+  document.getElementById('be-bs-size').value = bs ? bs.font_size : 36;
+
+  renderCTAList(b.cta_presets, b.cta_default);
+}
+
+function renderCTAList(presets, default_key) {
+  const ul = document.getElementById('be-cta-list');
+  ul.innerHTML = '';
+  Object.entries(presets).forEach(([key, cta]) => {
+    const card = document.createElement('div');
+    card.className = 'bg-slate-900 border border-slate-700 rounded-lg p-3';
+    card.dataset.key = key;
+    const dur = cta.duration ?? 3.0;
+    const fontSize = cta.font_size ?? 64;
+    const bgColor = cta.bg_color || '#1E1B4B';
+    const textColor = cta.text_color || '#FFFFFF';
+    const accent = cta.accent_color || '#FFE600';
+    const bold = cta.bold !== false;
+    card.innerHTML = `
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-xs text-slate-500">${escapeHtmlSimple(key)}</span>
+          <label class="text-xs text-slate-400 flex items-center gap-1">
+            <input type="radio" name="be-default-cta" value="${escapeHtmlSimple(key)}" ${key === default_key ? 'checked' : ''} class="accent-indigo-500">
+            по умолчанию
+          </label>
+        </div>
+        <button type="button" data-action="del" class="text-rose-400 hover:text-rose-300 text-xs">удалить</button>
+      </div>
+      <div class="space-y-1.5 text-xs">
+        <input data-f="text" type="text" placeholder="Главный текст (например «Попробуй бесплатно»)" value="${escapeHtmlSimple(cta.text)}" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5">
+        <input data-f="sub_text" type="text" placeholder="Подпись (excella.ru / @bot / ссылка)" value="${escapeHtmlSimple(cta.sub_text || '')}" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5">
+      </div>
+      <details class="mt-2">
+        <summary class="cursor-pointer text-xs text-slate-400 hover:text-white">⚙ цвета · размер · длительность</summary>
+        <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
+          <label class="flex flex-col">
+            <span class="text-slate-500 mb-0.5">фон</span>
+            <div class="flex gap-1">
+              <input data-f="bg_color" type="color" value="${escapeHtmlSimple(bgColor)}" class="w-8 h-7 bg-slate-800 border border-slate-700 rounded cursor-pointer">
+              <input data-f="bg_color_text" type="text" value="${escapeHtmlSimple(bgColor)}" class="flex-1 bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] font-mono">
+            </div>
+          </label>
+          <label class="flex flex-col">
+            <span class="text-slate-500 mb-0.5">текст</span>
+            <div class="flex gap-1">
+              <input data-f="text_color" type="color" value="${escapeHtmlSimple(textColor)}" class="w-8 h-7 bg-slate-800 border border-slate-700 rounded cursor-pointer">
+              <input data-f="text_color_text" type="text" value="${escapeHtmlSimple(textColor)}" class="flex-1 bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] font-mono">
+            </div>
+          </label>
+          <label class="flex flex-col">
+            <span class="text-slate-500 mb-0.5">акцент</span>
+            <div class="flex gap-1">
+              <input data-f="accent_color" type="color" value="${escapeHtmlSimple(accent)}" class="w-8 h-7 bg-slate-800 border border-slate-700 rounded cursor-pointer">
+              <input data-f="accent_color_text" type="text" value="${escapeHtmlSimple(accent)}" class="flex-1 bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] font-mono">
+            </div>
+          </label>
+          <label class="flex flex-col col-span-1">
+            <span class="text-slate-500 mb-0.5">размер шрифта (px @ 1080p)</span>
+            <input data-f="font_size" type="number" min="20" max="200" value="${fontSize}" class="bg-slate-800 border border-slate-700 rounded px-2 py-1.5">
+          </label>
+          <label class="flex flex-col col-span-1">
+            <span class="text-slate-500 mb-0.5">длительность (с)</span>
+            <input data-f="duration" type="number" step="0.5" min="0" max="10" value="${dur}" class="bg-slate-800 border border-slate-700 rounded px-2 py-1.5">
+          </label>
+          <label class="flex items-center gap-1 col-span-1 mt-3">
+            <input data-f="bold" type="checkbox" ${bold ? 'checked' : ''} class="accent-indigo-500">
+            <span class="text-slate-400">жирный</span>
+          </label>
+        </div>
+      </details>`;
+    card.querySelector('[data-action="del"]').onclick = () => card.remove();
+    // синхронизируем colorpicker ↔ text input для каждого цвета
+    ['bg_color', 'text_color', 'accent_color'].forEach(fname => {
+      const colorInp = card.querySelector(`[data-f="${fname}"]`);
+      const textInp = card.querySelector(`[data-f="${fname}_text"]`);
+      if (colorInp && textInp) {
+        colorInp.addEventListener('input', () => { textInp.value = colorInp.value; });
+        textInp.addEventListener('input', () => {
+          if (/^#[0-9a-fA-F]{6}$/.test(textInp.value)) colorInp.value = textInp.value;
+        });
+      }
+    });
+    ul.appendChild(card);
+  });
+}
+
+document.getElementById('be-cta-add').onclick = () => {
+  const key = prompt('Ключ нового CTA (a-z, цифры, дефис; например "vebinar"):');
+  if (!key || !/^[a-z0-9_-]+$/.test(key)) {
+    alert('Ключ: латиница нижнего регистра, цифры, дефис, подчёркивание.');
+    return;
+  }
+  const ul = document.getElementById('be-cta-list');
+  if (ul.querySelector(`[data-key="${key}"]`)) {
+    alert('Такой ключ уже есть.');
+    return;
+  }
+  const cur = collectCTAFromUI();
+  cur[key] = {text: 'Новый CTA', sub_text: 'ссылка', accent_color: '#FFE600', duration: 3.0,
+              bg_color: '#1E1B4B', text_color: '#FFFFFF', font_size: 64, bold: true, fade_in: 0.3};
+  renderCTAList(cur, document.querySelector('input[name="be-default-cta"]:checked')?.value || key);
+};
+
+function collectCTAFromUI() {
+  const out = {};
+  document.querySelectorAll('#be-cta-list [data-key]').forEach(card => {
+    const key = card.dataset.key;
+    const fields = {};
+    card.querySelectorAll('[data-f]').forEach(inp => {
+      const f = inp.dataset.f;
+      let val = inp.value;
+      if (inp.type === 'checkbox') val = inp.checked;
+      if (f === 'duration') val = parseFloat(val) || 3.0;
+      if (f === 'font_size') val = parseInt(val, 10) || 64;
+      fields[f] = val;
+    });
+    out[key] = {
+      text: fields.text || '',
+      sub_text: fields.sub_text || '',
+      bg_color: fields.bg_color || '#1E1B4B',
+      text_color: fields.text_color || '#FFFFFF',
+      accent_color: fields.accent_color || '#FFE600',
+      duration: fields.duration ?? 3.0,
+      font_size: fields.font_size ?? 64,
+      bold: fields.bold !== false,
+      fade_in: 0.3,
+    };
+  });
+  return out;
+}
+
+document.getElementById('be-save').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  const name = CURRENT_BRAND.name;
+  const bsEnabled = document.getElementById('be-bs-enabled').checked;
+  const patch = {
+    lead_url: document.getElementById('be-lead-url').value.trim(),
+    niche: document.getElementById('be-niche').value.trim(),
+    target_audience: document.getElementById('be-audience').value.trim(),
+    brand_voice: document.getElementById('be-voice').value.trim(),
+    watermark_position: document.getElementById('be-wm-pos').value,
+    watermark_opacity: parseFloat(document.getElementById('be-wm-opacity').value) || 0.7,
+    face_overlay_position: document.getElementById('be-face-pos').value,
+    face_overlay_scale: parseFloat(document.getElementById('be-face-scale').value) || 0.22,
+    face_overlay_circle: document.getElementById('be-face-circle').checked,
+    bottom_strip: bsEnabled ? {
+      text: document.getElementById('be-bs-text').value,
+      color: document.getElementById('be-bs-color').value,
+      bg_color: document.getElementById('be-bs-bg').value,
+      font_size: parseInt(document.getElementById('be-bs-size').value, 10) || 36,
+      opacity: 0.85, height: 80, bold: true,
+    } : null,
+    cta_presets: collectCTAFromUI(),
+    cta_default: document.querySelector('input[name="be-default-cta"]:checked')?.value || 'demo',
+  };
+  // загружаем watermark отдельно если выбран файл
+  const wmFile = document.getElementById('be-wm-file').files[0];
+  const fb = document.getElementById('be-feedback');
+  fb.classList.remove('hidden', 'text-rose-400', 'text-emerald-400');
+  try {
+    if (wmFile) {
+      const fd = new FormData();
+      fd.append('file', wmFile);
+      const wr = await fetch(`/brands/${name}/watermark`, {method: 'POST', body: fd});
+      if (!wr.ok) throw new Error('загрузка лого: ' + wr.status);
+    }
+    const r = await fetch(`/brands/${name}`, {
+      method: 'PATCH', headers: {'content-type': 'application/json'},
+      body: JSON.stringify(patch),
+    });
+    if (!r.ok) {
+      const err = await r.json();
+      throw new Error(err.detail || 'ошибка сохранения');
+    }
+    fb.classList.add('text-emerald-400');
+    fb.textContent = '✓ сохранено';
+    refreshBrandList(name);
+    refreshFormCTAFromBrand();  // обновим список CTA в форме на главной
+  } catch (e) {
+    fb.classList.add('text-rose-400');
+    fb.textContent = '✗ ' + e.message;
+  }
+};
+
+document.getElementById('be-cancel').onclick = () => { brandsModal.classList.add('hidden'); };
+
+document.getElementById('be-delete').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  const confirmText = `Удалить бренд "${CURRENT_BRAND.name}"?\n\nТакже удалятся: логотип, OAuth-токены YouTube/VK/Instagram для этого бренда.\nКлипы и job'ы НЕ затрагиваются.`;
+  if (!confirm(confirmText)) return;
+  const r = await fetch(`/brands/${CURRENT_BRAND.name}`, {method: 'DELETE'});
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: 'ошибка'}));
+    alert('Не удалось удалить: ' + (err.detail || r.status));
+    return;
+  }
+  CURRENT_BRAND = null;
+  document.getElementById('brand-editor').classList.add('hidden');
+  refreshBrandList();
+  refreshFormCTAFromBrand();  // обновим селектор брендов в основной форме
+};
+
+document.getElementById('be-wm-delete').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  await fetch(`/brands/${CURRENT_BRAND.name}/watermark`, {method: 'DELETE'});
+  loadBrandIntoEditor(CURRENT_BRAND.name);
+};
+
+document.getElementById('be-face-file').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file || !CURRENT_BRAND) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch(`/brands/${CURRENT_BRAND.name}/face-overlay`, {method: 'POST', body: fd});
+  if (!r.ok) { alert('Не удалось загрузить'); return; }
+  loadBrandIntoEditor(CURRENT_BRAND.name);
+};
+
+document.getElementById('be-face-delete').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  if (!confirm('Удалить face overlay?')) return;
+  await fetch(`/brands/${CURRENT_BRAND.name}/face-overlay`, {method: 'DELETE'});
+  loadBrandIntoEditor(CURRENT_BRAND.name);
+};
+
+async function refreshYTStatus(brand) {
+  const r = await fetch(`/publish/youtube/status/${brand}`).then(r => r.json());
+  const el = document.getElementById('be-yt-status');
+  const connectBtn = document.getElementById('be-yt-connect');
+  const disconnectBtn = document.getElementById('be-yt-disconnect');
+  if (r.connected) {
+    el.innerHTML = `<span class="text-emerald-400">✅ подключён</span> · <span class="text-slate-300">${escapeHtmlSimple(r.channel_title || '')}</span>`;
+    connectBtn.classList.add('hidden');
+    disconnectBtn.classList.remove('hidden');
+  } else if (r.has_client_secrets) {
+    el.innerHTML = `<span class="text-amber-400">⚠ client_secrets есть, нужна авторизация</span>`;
+    connectBtn.classList.remove('hidden');
+    disconnectBtn.classList.add('hidden');
+    if (r.error) el.innerHTML += `<div class="text-rose-400 mt-1">${escapeHtmlSimple(r.error)}</div>`;
+  } else {
+    el.innerHTML = `<span class="text-slate-400">не подключён</span>`;
+    connectBtn.classList.add('hidden');
+    disconnectBtn.classList.add('hidden');
+  }
+}
+
+document.getElementById('be-yt-secrets').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file || !CURRENT_BRAND) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch(`/publish/youtube/upload-secrets/${CURRENT_BRAND.name}`, {method: 'POST', body: fd});
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: 'ошибка'}));
+    alert('Ошибка: ' + err.detail);
+    return;
+  }
+  await refreshYTStatus(CURRENT_BRAND.name);
+};
+
+document.getElementById('be-yt-connect').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  const btn = document.getElementById('be-yt-connect');
+  btn.disabled = true; btn.textContent = '⏳ откройте браузер для авторизации…';
+  try {
+    const r = await fetch(`/publish/youtube/connect/${CURRENT_BRAND.name}`, {method: 'POST'});
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: 'ошибка'}));
+      alert('Ошибка: ' + err.detail);
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = 'Подключить';
+    await refreshYTStatus(CURRENT_BRAND.name);
+  }
+};
+
+document.getElementById('be-yt-disconnect').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  if (!confirm('Отключить YouTube для этого бренда?')) return;
+  await fetch(`/publish/youtube/disconnect/${CURRENT_BRAND.name}`, {method: 'POST'});
+  await refreshYTStatus(CURRENT_BRAND.name);
+};
+
+async function refreshVKStatus(brand) {
+  const r = await fetch(`/publish/vk/status/${brand}`).then(r => r.json());
+  const el = document.getElementById('be-vk-status');
+  const connectBtn = document.getElementById('be-vk-connect');
+  const disconnectBtn = document.getElementById('be-vk-disconnect');
+  if (r.connected) {
+    const target = r.target_name || (r.target_owner_id < 0 ? `группа ${r.target_owner_id}` : `личная: ${r.user_name}`);
+    el.innerHTML = `<span class="text-emerald-400">✅ подключён</span> · ${escapeHtmlSimple(r.user_name)} → ${escapeHtmlSimple(target)}`;
+    disconnectBtn.classList.remove('hidden');
+  } else {
+    el.innerHTML = r.error
+      ? `<span class="text-rose-400">не подключён · ${escapeHtmlSimple(r.error)}</span>`
+      : `<span class="text-slate-400">не подключён</span>`;
+    disconnectBtn.classList.add('hidden');
+  }
+}
+
+document.getElementById('be-vk-connect').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  const token = document.getElementById('be-vk-token').value.trim();
+  if (!token) { alert('Вставь access_token'); return; }
+  const target = parseInt(document.getElementById('be-vk-target').value, 10) || 0;
+  const targetName = document.getElementById('be-vk-target-name').value.trim();
+  const r = await fetch(`/publish/vk/connect/${CURRENT_BRAND.name}`, {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({access_token: token, target_owner_id: target, target_name: targetName}),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: 'ошибка'}));
+    alert('Ошибка: ' + err.detail);
+    return;
+  }
+  document.getElementById('be-vk-token').value = '';
+  await refreshVKStatus(CURRENT_BRAND.name);
+};
+
+document.getElementById('be-vk-disconnect').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  if (!confirm('Отключить ВК для этого бренда?')) return;
+  await fetch(`/publish/vk/disconnect/${CURRENT_BRAND.name}`, {method: 'POST'});
+  await refreshVKStatus(CURRENT_BRAND.name);
+};
+
+async function refreshIGStatus(brand) {
+  const r = await fetch(`/publish/instagram/status/${brand}`).then(r => r.json());
+  const el = document.getElementById('be-ig-status');
+  const connectBtn = document.getElementById('be-ig-connect');
+  const disconnectBtn = document.getElementById('be-ig-disconnect');
+  if (r.connected) {
+    el.innerHTML = `<span class="text-emerald-400">✅ подключён</span> · @${escapeHtmlSimple(r.username)} · публ.URL: ${escapeHtmlSimple(r.public_base_url || '—')}`;
+    disconnectBtn.classList.remove('hidden');
+  } else {
+    el.innerHTML = r.error
+      ? `<span class="text-rose-400">не подключён · ${escapeHtmlSimple(r.error)}</span>`
+      : `<span class="text-slate-400">не подключён</span>`;
+    disconnectBtn.classList.add('hidden');
+  }
+  if (r.public_base_url) document.getElementById('be-ig-public').value = r.public_base_url;
+}
+
+document.getElementById('be-ig-connect').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  const token = document.getElementById('be-ig-token').value.trim();
+  const userId = document.getElementById('be-ig-userid').value.trim();
+  const publicBase = document.getElementById('be-ig-public').value.trim();
+  if (!token || !userId) { alert('Нужны токен и Instagram User ID'); return; }
+  const r = await fetch(`/publish/instagram/connect/${CURRENT_BRAND.name}`, {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({access_token: token, ig_user_id: userId, public_base_url: publicBase}),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: 'ошибка'}));
+    alert('Ошибка: ' + err.detail);
+    return;
+  }
+  document.getElementById('be-ig-token').value = '';
+  await refreshIGStatus(CURRENT_BRAND.name);
+};
+
+document.getElementById('be-ig-disconnect').onclick = async () => {
+  if (!CURRENT_BRAND) return;
+  if (!confirm('Отключить Instagram для этого бренда?')) return;
+  await fetch(`/publish/instagram/disconnect/${CURRENT_BRAND.name}`, {method: 'POST'});
+  await refreshIGStatus(CURRENT_BRAND.name);
+};
+
+document.getElementById('brand-new').onclick = async () => {
+  const name = prompt('Имя нового бренда (латиница нижнего регистра, цифры, дефис; 2-31 символов):');
+  if (!name) return;
+  const r = await fetch('/brands', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({name, copy_from: 'excella'}),
+  });
+  if (!r.ok) {
+    const err = await r.json();
+    alert('Ошибка: ' + (err.detail || r.status));
+    return;
+  }
+  refreshBrandList(name);
+};
+
+async function refreshFormCTAFromBrand() {
+  // обновляет блок выбора CTA в основной форме
+  const brands = await fetch('/brands').then(r => r.json());
+  if (!brands.length) return;
+  const b = brands[0];
+  document.getElementById('brand').value = b.name;
+  const container = document.getElementById('cta-presets');
+  const hidden = document.getElementById('cta');
+  container.innerHTML = '';
+  b.cta_presets.forEach(p => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.key = p.key;
+    btn.className = 'px-3 py-2 rounded-lg border text-sm text-left transition ' +
+      (p.key === hidden.value
+        ? 'bg-indigo-600 border-indigo-500 text-white'
+        : 'bg-slate-800 border-slate-700 hover:border-indigo-500');
+    if (p.key === 'none') {
+      btn.innerHTML = `<div class="font-medium text-slate-400">— без CTA —</div>`;
+    } else {
+      btn.innerHTML = `<div class="font-medium">${escapeHtmlSimple(p.text)}</div><div class="text-xs text-slate-400">${escapeHtmlSimple(p.sub_text || '')}</div>`;
+    }
+    btn.onclick = () => {
+      hidden.value = p.key;
+      container.querySelectorAll('button').forEach(bb => {
+        const sel = bb.dataset.key === p.key;
+        bb.className = 'px-3 py-2 rounded-lg border text-sm text-left transition ' +
+          (sel ? 'bg-indigo-600 border-indigo-500 text-white'
+               : 'bg-slate-800 border-slate-700 hover:border-indigo-500');
+      });
+    };
+    container.appendChild(btn);
+  });
+}
+
+// ─── Настройки ───
+const settingsModal = document.getElementById('settings-modal');
+document.getElementById('open-settings').onclick = () => { settingsModal.classList.remove('hidden'); refreshHfStatus(); };
+document.getElementById('close-settings').onclick = () => settingsModal.classList.add('hidden');
+settingsModal.onclick = (e) => { if (e.target === settingsModal) settingsModal.classList.add('hidden'); };
+
+async function refreshHfStatus() {
+  const r = await fetch('/settings').then(r => r.json());
+  const status = document.getElementById('hf-status');
+  if (r.hf_token_set) {
+    status.innerHTML = `<span class="text-emerald-400">✅ установлен</span> · ${r.hf_token_masked}`;
+  } else {
+    status.innerHTML = `<span class="text-amber-400">⚠ не задан</span> — модели качаются медленно`;
+  }
+  const pexStatus = document.getElementById('pexels-status');
+  if (pexStatus) {
+    pexStatus.innerHTML = r.pexels_set
+      ? `<span class="text-emerald-400">✅ установлен</span> · ${r.pexels_masked}`
+      : `<span class="text-slate-400">не задан — B-roll будет недоступен</span>`;
+  }
+  const elStatus = document.getElementById('elevenlabs-status');
+  if (elStatus) {
+    elStatus.innerHTML = r.elevenlabs_set
+      ? `<span class="text-emerald-400">✅ установлен</span> · ${r.elevenlabs_masked}`
+      : `<span class="text-slate-400">не задан — озвучка/дубляж недоступны</span>`;
+  }
+}
+
+async function saveElevenlabs(key) {
+  const r = await fetch('/settings', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({elevenlabs_api_key: key}),
+  });
+  const probe = document.getElementById('elevenlabs-probe');
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: 'ошибка'}));
+    probe.classList.remove('hidden');
+    probe.className = 'bg-rose-950/40 border border-rose-700/40 rounded-lg p-2 text-xs mb-4 text-rose-300';
+    probe.textContent = '✗ ' + (err.detail || 'не удалось сохранить');
+    return;
+  }
+  document.getElementById('elevenlabs-input').value = '';
+  refreshHfStatus();
+  probe.classList.add('hidden');
+}
+
+async function checkElevenlabs() {
+  const probe = document.getElementById('elevenlabs-probe');
+  probe.classList.remove('hidden');
+  probe.className = 'bg-slate-800 rounded-lg p-2 text-xs mb-4 text-slate-300';
+  probe.textContent = '⏳ проверяю…';
+  const r = await fetch('/settings/elevenlabs/check').then(r => r.json()).catch(() => null);
+  if (!r || !r.ok) {
+    probe.className = 'bg-rose-950/40 border border-rose-700/40 rounded-lg p-2 text-xs mb-4 text-rose-300';
+    probe.textContent = '✗ ' + (r?.error || 'нет ответа от API');
+    return;
+  }
+  const dubLine = r.dubbing_available
+    ? `<span class="text-emerald-400">✅ Dubbing API доступен</span> (clone-режим работает)`
+    : `<span class="text-amber-400">⚠ Dubbing API недоступен</span> на плане «${r.tier}» — нужен Pro+. Library-режим работает.`;
+  probe.className = 'bg-slate-800 rounded-lg p-2 text-xs mb-4 text-slate-300 space-y-1';
+  probe.innerHTML = `
+    <div>✅ ключ работает · план: <b>${r.tier}</b></div>
+    <div>использовано: ${r.characters_used.toLocaleString()} / ${r.characters_limit.toLocaleString()} симв</div>
+    <div>${dubLine}</div>
+  `;
+}
+
+async function savePexels(key) {
+  const r = await fetch('/settings', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({pexels_api_key: key}),
+  });
+  if (r.ok) {
+    document.getElementById('pexels-input').value = '';
+    refreshHfStatus();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const sBtn = document.getElementById('pexels-save');
+  const cBtn = document.getElementById('pexels-clear');
+  if (sBtn) sBtn.onclick = () => {
+    const v = document.getElementById('pexels-input').value.trim();
+    if (!v) { alert('Вставь ключ'); return; }
+    savePexels(v);
+  };
+  if (cBtn) cBtn.onclick = () => savePexels('');
+
+  const elSave = document.getElementById('elevenlabs-save');
+  const elClear = document.getElementById('elevenlabs-clear');
+  const elCheck = document.getElementById('elevenlabs-check');
+  if (elSave) elSave.onclick = () => {
+    const v = document.getElementById('elevenlabs-input').value.trim();
+    if (!v) { alert('Вставь ключ'); return; }
+    saveElevenlabs(v);
+  };
+  if (elClear) elClear.onclick = () => saveElevenlabs('');
+  if (elCheck) elCheck.onclick = () => checkElevenlabs();
+});
+
+async function saveHf(token) {
+  const r = await fetch('/settings', {
+    method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({hf_token: token}),
+  });
+  const fb = document.getElementById('hf-feedback');
+  fb.classList.remove('hidden', 'text-rose-400', 'text-emerald-400');
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: 'ошибка'}));
+    fb.classList.add('text-rose-400');
+    fb.textContent = '✗ ' + (err.detail || 'не удалось сохранить');
+  } else {
+    fb.classList.add('text-emerald-400');
+    fb.textContent = token ? '✓ токен сохранён' : '✓ токен удалён';
+    document.getElementById('hf-token-input').value = '';
+    refreshHfStatus();
+  }
+}
+
+document.getElementById('hf-save').onclick = () => {
+  const t = document.getElementById('hf-token-input').value.trim();
+  if (!t) { alert('Вставь токен в поле'); return; }
+  saveHf(t);
+};
+document.getElementById('hf-clear').onclick = () => {
+  if (confirm('Удалить сохранённый HF токен?')) saveHf('');
+};
+
+refreshHfStatus();
+
+// ─── Промпты ───
+async function loadPromptsEditor() {
+  const root = document.getElementById('prompts-editor');
+  const list = await fetch('/prompts').then(r => r.json());
+  root.innerHTML = '';
+  list.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'bg-slate-800 border border-slate-700 rounded-lg p-3';
+    card.dataset.name = p.name;
+    card.innerHTML = `
+      <details ${p.customized ? 'open' : ''}>
+        <summary class="cursor-pointer flex items-center justify-between">
+          <span class="font-medium">${escapeHtmlSimple(p.label)}</span>
+          <span class="text-xs ${p.customized ? 'text-amber-400' : 'text-slate-500'}">
+            ${p.customized ? '✏️ изменён' : 'дефолт'}
+          </span>
+        </summary>
+        <div class="mt-3 space-y-2">
+          <textarea data-prompt-text class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs font-mono leading-snug" rows="14"></textarea>
+          <div class="flex justify-between items-center">
+            <button type="button" data-act="reset" class="text-rose-400 hover:text-rose-300 text-xs">↺ сбросить к дефолту</button>
+            <div class="flex gap-2">
+              <button type="button" data-act="save" class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium">Сохранить</button>
+            </div>
+          </div>
+          <div data-feedback class="hidden text-xs"></div>
+        </div>
+      </details>`;
+    card.querySelector('[data-prompt-text]').value = p.text;
+    card.querySelector('[data-act="save"]').onclick = async () => {
+      const text = card.querySelector('[data-prompt-text]').value;
+      const fb = card.querySelector('[data-feedback]');
+      fb.classList.remove('hidden', 'text-rose-400', 'text-emerald-400');
+      const r = await fetch(`/prompts/${p.name}`, {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({text}),
+      });
+      if (r.ok) {
+        fb.classList.add('text-emerald-400');
+        fb.textContent = '✓ сохранено';
+        setTimeout(loadPromptsEditor, 800);
+      } else {
+        fb.classList.add('text-rose-400');
+        fb.textContent = '✗ ошибка';
+      }
+    };
+    card.querySelector('[data-act="reset"]').onclick = async () => {
+      if (!confirm('Сбросить промпт к дефолту?')) return;
+      const r = await fetch(`/prompts/${p.name}/reset`, {method: 'POST'});
+      if (r.ok) {
+        const data = await r.json();
+        card.querySelector('[data-prompt-text]').value = data.text;
+        loadPromptsEditor();
+      }
+    };
+    root.appendChild(card);
+  });
+}
+// загружаем при открытии настроек
+document.getElementById('open-settings').addEventListener('click', loadPromptsEditor);
+loadPromptsEditor();
+
+document.getElementById('open-improvement').onclick = async () => {
+  const out = document.getElementById('improvement-output');
+  out.classList.remove('hidden');
+  out.innerHTML = '<div class="text-slate-400">загрузка…</div>';
+  const r = await fetch('/improvement/stats').then(r => r.json());
+  if (!r.total_corrections) {
+    out.innerHTML = `<div class="text-slate-400">${(r.suggestions || []).join('<br>')}</div>`;
+    return;
+  }
+  const transitions = Object.entries(r.layout_transitions)
+    .map(([k, v]) => `<div class="flex justify-between"><span class="text-slate-300">${escapeHtmlSimple(k)}</span><span class="font-mono">${v}</span></div>`).join('');
+  const suggestions = (r.suggestions || []).map(s => `<li class="ml-4 list-disc">${escapeHtmlSimple(s)}</li>`).join('');
+  out.innerHTML = `
+    <div class="text-slate-300 mb-2">Всего коррекций: <span class="font-bold">${r.total_corrections}</span> · правок лица: ${r.face_changes}</div>
+    <div class="bg-slate-900 rounded p-2 mb-3 text-xs space-y-0.5">${transitions}</div>
+    <div class="text-amber-400 font-medium mb-1">Подсказки:</div>
+    <ul class="text-xs text-slate-300">${suggestions}</ul>
+  `;
+};
+
+function escapeHtmlSimple(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ─── LLM провайдеры в форме ───
+let LLM_PROVIDERS_CACHE = null;
+async function loadLLMProviders() {
+  const data = await fetch('/llm/providers').then(r => r.json());
+  LLM_PROVIDERS_CACHE = data;
+  const container = document.getElementById('llm-providers');
+  const hiddenProv = document.getElementById('llm_provider');
+  const hiddenModel = document.getElementById('llm_model');
+  hiddenProv.value = data.default;
+  container.innerHTML = '';
+  data.providers.forEach(p => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.key = p.name;
+    const sel = p.name === hiddenProv.value;
+    const ok = p.configured;
+    btn.disabled = !ok;
+    btn.title = ok ? '' : `Не настроен: ${p.auth}`;
+    btn.className = 'px-3 py-2 rounded-lg border text-sm text-left transition ' +
+      (sel ? 'bg-indigo-600 border-indigo-500 text-white'
+           : ok ? 'bg-slate-800 border-slate-700 hover:border-indigo-500'
+                : 'bg-slate-900 border-slate-800 text-slate-500 cursor-not-allowed');
+    const badge = p.kind === 'subscription' ? '💳 подписка' : '🔑 API';
+    const okBadge = ok ? '<span class="text-emerald-400 text-[10px]">✓</span>' : '<span class="text-rose-400 text-[10px]">не настроен</span>';
+    btn.innerHTML = `
+      <div class="font-medium text-xs flex items-center gap-1">${escapeHtmlSimple(p.label)} ${okBadge}</div>
+      <div class="text-[10px] text-slate-400 mt-0.5">${badge}</div>`;
+    btn.onclick = () => {
+      if (!ok) { alert(`Чтобы использовать "${p.label}":\n\nУстановка: ${p.install}\nАвторизация: ${p.auth}`); return; }
+      hiddenProv.value = p.name;
+      updateModelOptions(p);
+      container.querySelectorAll('button').forEach(bb => {
+        const isSel = bb.dataset.key === p.name;
+        const isOk = !bb.disabled;
+        bb.className = 'px-3 py-2 rounded-lg border text-sm text-left transition ' +
+          (isSel ? 'bg-indigo-600 border-indigo-500 text-white'
+                 : isOk ? 'bg-slate-800 border-slate-700 hover:border-indigo-500'
+                        : 'bg-slate-900 border-slate-800 text-slate-500 cursor-not-allowed');
+      });
+    };
+    container.appendChild(btn);
+  });
+  // выставляем модели для дефолтного
+  const def = data.providers.find(p => p.name === data.default);
+  if (def) updateModelOptions(def);
+}
+function updateModelOptions(provider) {
+  const sel = document.getElementById('llm-model-select');
+  const hidden = document.getElementById('llm_model');
+  sel.innerHTML = '';
+  (provider.models || ['default']).forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m === 'default' ? '' : m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  });
+  hidden.value = '';
+  sel.onchange = () => { hidden.value = sel.value; };
+}
+loadLLMProviders();
+
+// ─── CTA пресеты в форме ───
+refreshFormCTAFromBrand();
+
+// ─── Шаблоны субтитров ───
+fetch('/subtitle-templates').then(r => r.json()).then(templates => {
+  const container = document.getElementById('sub-templates');
+  const hidden = document.getElementById('sub_template');
+  container.innerHTML = '';
+  templates.forEach(t => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.key = t.key;
+    btn.className = 'px-3 py-2 rounded-lg border text-sm text-left transition ' +
+      (t.key === hidden.value
+        ? 'bg-indigo-600 border-indigo-500 text-white'
+        : 'bg-slate-800 border-slate-700 hover:border-indigo-500');
+    const desc = t.use_highlight
+      ? `karaoke · ${t.words_per_chunk} слов · ${t.size}pt`
+      : `block · ${t.words_per_chunk} слов · ${t.size}pt`;
+    btn.innerHTML = `<div class="font-medium">${t.name}</div><div class="text-xs text-slate-400">${desc}</div>`;
+    btn.onclick = () => {
+      hidden.value = t.key;
+      container.querySelectorAll('button').forEach(b => {
+        const sel = b.dataset.key === t.key;
+        b.className = 'px-3 py-2 rounded-lg border text-sm text-left transition ' +
+          (sel ? 'bg-indigo-600 border-indigo-500 text-white'
+               : 'bg-slate-800 border-slate-700 hover:border-indigo-500');
+      });
+    };
+    container.appendChild(btn);
+  });
+});
+
+fetch('/backend').then(r => r.json()).then(b => {
+  const badge = b.name === 'mlx' ? '🍎 MLX' : b.name === 'faster-cuda' ? '⚡ CUDA' : '🐢 CPU';
+  document.getElementById('backend-info').innerHTML =
+    `<span class="font-medium text-slate-300">${badge}</span> · ${b.device} · ${b.note} · модель: <code class="text-indigo-400">${b.model}</code>`;
+});
+
+const STAGE_NAMES = {
+  pending: 'ожидание', download: 'скачивание', transcribe: 'транскрипция',
+  pick: 'выбор моментов', track: 'face tracking', render: 'рендер',
+  done: 'готово', error: 'ошибка',
+};
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = document.getElementById('url').value.trim();
+  const file = document.getElementById('file').files[0];
+  if (!url && !file) { alert('URL или файл'); return; }
+  // ⭐ берём ВСЕ поля формы (включая hidden inputs: cta, brand, sub_template, llm_*, download_*)
+  const fd = new FormData(form);
+  if (!file) fd.delete('file');  // не отправляем пустое поле файла
+  if (!url) fd.delete('url');
+
+  progSec.classList.remove('hidden');
+  resultsSec.classList.add('hidden');
+  clipsEl.innerHTML = '';
+  logEl.textContent = '';
+  bar.style.width = '0%'; pctLabel.textContent = '0%'; stageLabel.textContent = 'старт';
+
+  const r = await fetch('/jobs', { method: 'POST', body: fd });
+  if (!r.ok) { alert('Ошибка: ' + await r.text()); return; }
+  const { job_id } = await r.json();
+  CURRENT_JOB_ID = job_id;
+  localStorage.setItem('last_job_id', job_id);  // persist для F5
+  connectWS(job_id);
+});
+
+// при загрузке страницы — если есть последний job, попробуем восстановить
+async function restoreLastJob() {
+  const last = localStorage.getItem('last_job_id');
+  if (!last) return;
+  try {
+    const r = await fetch(`/jobs/${last}`);
+    if (!r.ok) return;
+    const job = await r.json();
+    if (job.status === 'done' && job.clips && job.clips.length) {
+      CURRENT_JOB_ID = last;
+      progSec.classList.add('hidden');
+      renderClips(last, job.clips);
+    } else if (job.status === 'running') {
+      CURRENT_JOB_ID = last;
+      progSec.classList.remove('hidden');
+      connectWS(last);
+    }
+  } catch (e) { /* job не существует — ОК */ }
+}
+
+// список последних job'ов
+async function refreshRecentJobs() {
+  try {
+    const list = await fetch('/jobs').then(r => r.json());
+    const sec = document.getElementById('recent-jobs');
+    const ul = document.getElementById('jobs-list');
+    if (!list.length) { sec.classList.add('hidden'); return; }
+    sec.classList.remove('hidden');
+    ul.innerHTML = '';
+    list.slice(0, 10).forEach(j => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      const colorClass = j.status === 'done'
+        ? 'border-emerald-700 hover:border-emerald-500'
+        : j.status === 'error' ? 'border-rose-700'
+        : j.status === 'running' ? 'border-amber-600 animate-pulse'
+        : 'border-slate-700';
+      card.className = `text-left px-3 py-2 rounded-lg border ${colorClass} bg-slate-900 hover:bg-slate-800 text-sm`;
+      const ic = j.status === 'done' ? '✅' : j.status === 'error' ? '❌' : j.status === 'running' ? '⏳' : '⏸';
+      const sub = j.status === 'done' ? `${j.n_clips} клипов`
+        : j.status === 'running' ? `${j.stage} ${Math.round(j.progress)}%`
+        : j.error ? j.error.slice(0, 50)
+        : j.status;
+      card.innerHTML = `
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="font-medium truncate">${ic} ${escapeHtmlSimple(j.title || j.id)}</div>
+            <div class="text-xs text-slate-400 truncate">${escapeHtmlSimple(sub)}</div>
+          </div>
+          <button type="button" data-del="${j.id}" class="text-slate-500 hover:text-rose-400 text-xs px-1" title="Удалить">×</button>
+        </div>`;
+      card.onclick = async (e) => {
+        if (e.target.dataset.del) {
+          if (!confirm(`Удалить задание ${j.id}?`)) return;
+          await fetch(`/jobs/${j.id}`, {method: 'DELETE'});
+          if (localStorage.getItem('last_job_id') === j.id) localStorage.removeItem('last_job_id');
+          refreshRecentJobs();
+          return;
+        }
+        // открываем клипы этого job'а
+        const r = await fetch(`/jobs/${j.id}`);
+        if (!r.ok) return;
+        const full = await r.json();
+        if (full.status === 'done' && full.clips && full.clips.length) {
+          CURRENT_JOB_ID = j.id;
+          localStorage.setItem('last_job_id', j.id);
+          progSec.classList.add('hidden');
+          renderClips(j.id, full.clips);
+          window.scrollTo({top: document.getElementById('results').offsetTop - 20, behavior: 'smooth'});
+        } else if (full.status === 'running') {
+          CURRENT_JOB_ID = j.id;
+          progSec.classList.remove('hidden');
+          connectWS(j.id);
+        }
+      };
+      ul.appendChild(card);
+    });
+  } catch (e) {}
+}
+
+restoreLastJob();
+refreshRecentJobs();
+// обновляем список каждые 5 сек если есть running job
+setInterval(refreshRecentJobs, 5000);
+
+function connectWS(jobId) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/${jobId}`);
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.error) { stageLabel.textContent = 'ошибка'; logEl.textContent += m.error + '\n'; return; }
+    const stageName = STAGE_NAMES[m.stage] || m.stage;
+    stageLabel.innerHTML = `<span class="spinner hidden" data-spinner></span>${stageName}`;
+    pctLabel.textContent = (m.progress || 0).toFixed(0) + '%';
+    etaLabel.textContent = m.eta_s ? `· осталось ~${formatEta(m.eta_s)}` : '';
+    const newPct = m.progress || 0;
+    if (Math.abs(newPct - lastPct) >= 0.5) {
+      lastProgressMove = Date.now();
+      lastPct = newPct;
+    }
+    bar.style.width = newPct + '%';
+    const etaTxt = m.eta_s ? ` (~${formatEta(m.eta_s)})` : '';
+    if (m.msg) logEl.textContent += `[${m.stage} ${(m.progress||0).toFixed(0)}%${etaTxt}] ${m.msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+    if (m.stage === 'done' && m.clips) renderClips(jobId, m.clips);
+    if (m.stage === 'error') bar.classList.replace('bg-indigo-500', 'bg-rose-500');
+  };
+}
+
+let SUB_TEMPLATES_CACHE = null;
+async function getSubTemplates() {
+  if (!SUB_TEMPLATES_CACHE) {
+    SUB_TEMPLATES_CACHE = await fetch('/subtitle-templates').then(r => r.json());
+  }
+  return SUB_TEMPLATES_CACHE;
+}
+
+function renderClips(jobId, clips) {
+  resultsSec.classList.remove('hidden');
+  clipsEl.innerHTML = '';
+  clips.forEach((c, idx) => renderClipCard(jobId, c, idx));
+}
+
+async function renderClipCard(jobId, c, idx) {
+  const templates = await getSubTemplates();
+  const card = document.createElement('div');
+  card.dataset.clipIdx = c.index;
+  card.className = 'bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col md:flex-row gap-5';
+
+  // ⭐ обёртка чтобы flex не стречил видео по высоте инфо-колонки
+  const vWrap = document.createElement('div');
+  vWrap.className = 'w-full md:w-48 flex-shrink-0 self-start';
+  const v = document.createElement('video');
+  v.controls = true;
+  const previewFile = c.files['720p'] || c.files['1080p'] || Object.values(c.files || {})[0] || '';
+  v.src = previewFile ? `/clips/${jobId}/${encodeURIComponent(previewFile)}?t=${Date.now()}` : '';
+  v.preload = 'metadata';
+  v.className = 'w-full rounded-lg bg-black aspect-[9/16] object-cover';
+  vWrap.appendChild(v);
+
+  const info = document.createElement('div');
+  info.className = 'flex-1 min-w-0';
+  const dur = (c.end - c.start).toFixed(0);
+  const currentTpl = c.sub_template || 'block';
+
+  info.innerHTML = `
+    <div class="text-lg font-semibold mb-1">${c.index}. ${escapeHtml(c.title)}</div>
+    <div class="text-slate-400 text-sm mb-3">${formatTime(c.start)} – ${formatTime(c.end)} · ${dur}с</div>
+    <div class="mb-3">
+      <div class="text-xs text-slate-400 mb-1.5">Стиль субтитров:</div>
+      <div class="flex flex-wrap gap-1.5" data-tpl-row></div>
+    </div>
+    <div data-trim-block></div>
+    <div data-scenes-block></div>
+    <div data-meta-block></div>
+    <div data-uniqueness-block></div>
+    <div class="flex flex-wrap gap-2 mb-2" data-publish-row></div>
+    <div class="flex flex-wrap gap-2" data-dl-row>
+      ${Object.entries(c.files).map(([res, fn]) =>
+        `<a href="/clips/${jobId}/${encodeURIComponent(fn)}" download
+           class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
+           ⬇ ${res}
+         </a>`).join('')}
+    </div>`;
+
+  const tplRow = info.querySelector('[data-tpl-row]');
+  templates.forEach(t => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'px-2.5 py-1 rounded text-xs border transition ' +
+      (t.key === currentTpl
+        ? 'bg-indigo-600 border-indigo-500 text-white'
+        : 'bg-slate-800 border-slate-700 hover:border-indigo-500');
+    btn.textContent = t.name;
+    btn.onclick = () => restyleClip(jobId, c.index, t.key, card, btn);
+    tplRow.appendChild(btn);
+  });
+
+  // ⭐ ВАЖНО: сначала собираем структуру, потом заполняем slot'ы
+  card.appendChild(vWrap);
+  card.appendChild(info);
+  clipsEl.appendChild(card);
+
+  // теперь slot'ы доступны через card.querySelector
+  renderUniquenessBlock(card, jobId, c);
+  renderPublishRow(card, jobId, c);
+  renderTrimBlock(card, jobId, c);
+  renderScenesBlock(card, jobId, c);
+  renderMetaBlock(card, jobId, c);
+}
+
+function renderUniquenessBlock(card, jobId, c) {
+  const slot = card.querySelector('[data-uniqueness-block]');
+  const platforms = [
+    {key: 'youtube', label: '▶️ YouTube'},
+    {key: 'instagram', label: '📷 Instagram'},
+    {key: 'vk', label: '💙 ВК'},
+    {key: 'tiktok', label: '🎵 TikTok'},
+  ];
+  const done = c.uniquified || {};
+  slot.innerHTML = `
+    <details class="bg-slate-800/50 border border-slate-700 rounded-lg p-3 mb-3 text-sm">
+      <summary class="cursor-pointer font-medium">🔀 Уникализация под платформы</summary>
+      <div class="mt-3">
+        <div class="text-xs text-slate-400 mb-2">
+          Создаёт варианты с различным цветом, скоростью, pitch'ем — чтобы алгоритмы IG/TT/VK
+          считали их уникальными и пушили в reach. Время: ~30с на платформу.
+        </div>
+        <div class="grid grid-cols-2 gap-2" data-uniq-row>
+          ${platforms.map(p => `
+            <button type="button" data-platform="${p.key}"
+              class="px-3 py-2 rounded-lg text-sm border transition ${done[p.key] ? 'bg-emerald-700/30 border-emerald-600 text-emerald-300' : 'bg-slate-800 border-slate-700 hover:border-indigo-500'}">
+              ${done[p.key] ? '✓ ' : ''}${p.label}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    </details>`;
+  slot.querySelectorAll('[data-platform]').forEach(btn => {
+    btn.onclick = () => uniquify(jobId, c, btn.dataset.platform, card, btn);
+  });
+}
+
+async function uniquify(jobId, c, platform, card, btn) {
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '⏳ обрабатываю…';
+  try {
+    const r = await fetch(`/jobs/${jobId}/clips/${c.index}/uniquify`, {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({platform}),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.status}));
+      alert('Ошибка: ' + (err.detail || r.status));
+      return;
+    }
+    const {clip} = await r.json();
+    Object.assign(c, clip);
+    renderUniquenessBlock(card, jobId, c);
+    // обновляем download row
+    const dlRow = card.querySelector('[data-dl-row]');
+    dlRow.innerHTML = Object.entries(clip.files).map(([res, fn]) =>
+      `<a href="/clips/${jobId}/${fn}" download class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">⬇ ${res}</a>`
+    ).join('');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+function renderPublishRow(card, jobId, c) {
+  const slot = card.querySelector('[data-publish-row]');
+  slot.innerHTML = '';
+
+  // YouTube
+  const ytPub = c.publications?.youtube;
+  if (ytPub?.url) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1';
+    wrap.innerHTML = `
+      <a href="${ytPub.url}" target="_blank" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium">
+        ▶️ YouTube ${ytPub.privacy}
+      </a>
+      <button type="button" data-pub="youtube" class="px-2 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 border border-rose-700 text-rose-300 text-xs">⟳</button>`;
+    slot.appendChild(wrap);
+  } else {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1';
+    wrap.innerHTML = `
+      <select data-pub-privacy="youtube" class="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs">
+        <option value="unlisted">по ссылке</option>
+        <option value="private">приватно</option>
+        <option value="public">публично</option>
+      </select>
+      <button type="button" data-pub="youtube" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-sm font-medium">📤 YouTube</button>`;
+    slot.appendChild(wrap);
+  }
+  slot.querySelector('[data-pub="youtube"]').onclick = () => publishYouTube(jobId, c, card);
+
+  // Instagram
+  const igPub = c.publications?.instagram;
+  if (igPub?.url) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1';
+    wrap.innerHTML = `
+      <a href="${igPub.url}" target="_blank" class="px-3 py-1.5 rounded-lg bg-pink-600 hover:bg-pink-500 text-sm font-medium">
+        ▶️ Instagram
+      </a>
+      <button type="button" data-pub="instagram" class="px-2 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 border border-rose-700 text-rose-300 text-xs">⟳</button>`;
+    slot.appendChild(wrap);
+  } else {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1';
+    wrap.innerHTML = `
+      <button type="button" data-pub="instagram" class="px-3 py-1.5 rounded-lg bg-pink-600 hover:bg-pink-500 text-white text-sm font-medium">📤 Instagram</button>`;
+    slot.appendChild(wrap);
+  }
+  slot.querySelector('[data-pub="instagram"]').onclick = () => publishIG(jobId, c, card);
+
+  // VK
+  const vkPub = c.publications?.vk;
+  if (vkPub?.url) {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1';
+    wrap.innerHTML = `
+      <a href="${vkPub.url}" target="_blank" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium">
+        ▶️ ВК ${vkPub.privacy}
+      </a>
+      <button type="button" data-pub="vk" class="px-2 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 border border-rose-700 text-rose-300 text-xs">⟳</button>`;
+    slot.appendChild(wrap);
+  } else {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex items-center gap-1';
+    wrap.innerHTML = `
+      <select data-pub-privacy="vk" class="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs">
+        <option value="all">публично</option>
+        <option value="nobody">приватно</option>
+      </select>
+      <button type="button" data-pub="vk" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium">📤 ВК</button>`;
+    slot.appendChild(wrap);
+  }
+  slot.querySelector('[data-pub="vk"]').onclick = () => publishVK(jobId, c, card);
+}
+
+async function publishIG(jobId, c, card) {
+  const slot = card.querySelector('[data-publish-row]');
+  const btn = slot.querySelector('[data-pub="instagram"]');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '⏳ загружаю в Meta…';
+  try {
+    const r = await fetch(`/jobs/${jobId}/clips/${c.index}/publish/instagram`, {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({share_to_feed: true}),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.status}));
+      alert('Ошибка IG: ' + (err.detail || r.status));
+      return;
+    }
+    const result = await r.json();
+    c.publications = c.publications || {};
+    c.publications.instagram = {url: result.url, media_id: result.media_id};
+    renderPublishRow(card, jobId, c);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function publishVK(jobId, c, card) {
+  const slot = card.querySelector('[data-publish-row]');
+  const privacySel = slot.querySelector('[data-pub-privacy="vk"]');
+  const privacy = privacySel ? privacySel.value : (c.publications?.vk?.privacy || 'all');
+  const btn = slot.querySelector('[data-pub="vk"]');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch(`/jobs/${jobId}/clips/${c.index}/publish/vk`, {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({privacy}),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.status}));
+      alert('Ошибка ВК: ' + (err.detail || r.status));
+      return;
+    }
+    const result = await r.json();
+    c.publications = c.publications || {};
+    c.publications.vk = {url: result.url, video_id: result.video_id, privacy};
+    renderPublishRow(card, jobId, c);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function publishYouTube(jobId, c, card) {
+  const slot = card.querySelector('[data-publish-row]');
+  const privacySel = slot.querySelector('[data-pub-privacy]');
+  const privacy = privacySel ? privacySel.value : (c.publications?.youtube?.privacy || 'unlisted');
+  const btn = slot.querySelector('[data-pub="youtube"]');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '⏳ загружаю…';
+  try {
+    const r = await fetch(`/jobs/${jobId}/clips/${c.index}/publish/youtube`, {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({privacy, use_meta_for: 'youtube'}),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.status}));
+      alert('Ошибка: ' + (err.detail || r.status));
+      return;
+    }
+    const result = await r.json();
+    c.publications = c.publications || {};
+    c.publications.youtube = {url: result.url, video_id: result.video_id, privacy};
+    renderPublishRow(card, jobId, c);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+const LAYOUT_LABELS = {
+  speaker_close: '👤 Лицо крупно',
+  active_speaker_close: '🗣 Активный спикер',
+  screen_full: '🖥 Экран полностью',
+  pip_speaker_screen: '🪟 Лицо + экран (PiP)',
+  wide_group: '👥 Группа',
+  wide_default: '🌐 Широкий',
+  split_screen: '✂️ Split-screen',
+};
+
+function renderScenesBlock(card, jobId, c) {
+  const slot = card.querySelector('[data-scenes-block]');
+  slot.innerHTML = `
+    <details class="bg-slate-800/50 border border-slate-700 rounded-lg p-3 mb-3 text-sm">
+      <summary class="cursor-pointer font-medium">🎬 Smart reframe (коррекции layout)</summary>
+      <div class="mt-3" data-scenes-content>
+        <div class="text-slate-400 text-xs">загрузка…</div>
+      </div>
+    </details>`;
+  const det = slot.querySelector('details');
+  let loaded = false;
+  det.addEventListener('toggle', async () => {
+    if (det.open && !loaded) {
+      loaded = true;
+      await loadScenes(slot, jobId, c);
+    }
+  });
+}
+
+async function loadScenes(slot, jobId, c) {
+  const content = slot.querySelector('[data-scenes-content]');
+  const r = await fetch(`/jobs/${jobId}/clips/${c.index}/scenes`);
+  if (!r.ok) {
+    content.innerHTML = `<div class="text-rose-400 text-xs">не удалось загрузить сцены (нужен новый прогон)</div>`;
+    return;
+  }
+  const data = await r.json();
+  const segs = data.segments;
+  const faces = data.available_face_ids;
+  const layouts = data.available_layouts;
+
+  // edits: индекс → patched fields
+  const edits = new Map();
+
+  function row(seg, idx) {
+    const layoutOptions = layouts.map(l =>
+      `<option value="${l}" ${l === seg.layout ? 'selected' : ''}>${LAYOUT_LABELS[l] || l}</option>`
+    ).join('');
+    const faceOptions = ['<option value="">— auto —</option>']
+      .concat(faces.map(f => `<option value="${f}" ${f === seg.primary_face_id ? 'selected' : ''}>face #${f}</option>`))
+      .join('');
+    return `
+      <div class="flex items-center gap-2 py-1 border-b border-slate-800/50" data-seg-idx="${idx}">
+        <div class="font-mono text-xs text-slate-400 w-20">${seg.start.toFixed(1)}–${seg.end.toFixed(1)}с</div>
+        <select data-f="layout" class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs">${layoutOptions}</select>
+        <select data-f="primary_face_id" class="w-28 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs">${faceOptions}</select>
+        ${seg.overridden ? '<span class="text-amber-400 text-[10px]" title="уже override">●</span>' : ''}
+      </div>`;
+  }
+
+  content.innerHTML = `
+    <div class="text-xs text-slate-400 mb-2">${segs.length} сегментов · доступно лиц: ${faces.length}</div>
+    <div class="space-y-0 max-h-64 overflow-y-auto pr-1" data-seg-list>
+      ${segs.map(row).join('')}
+    </div>
+    <button type="button" data-act="save-scenes" class="mt-3 px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-xs font-medium w-full">
+      Применить коррекции (~30с)
+    </button>
+    <div class="text-xs text-slate-500 mt-2">Меняй layout/лицо для нужных сегментов и нажми «Применить». Только изменённые отправятся как override.</div>`;
+
+  // отслеживаем правки
+  content.querySelectorAll('[data-seg-idx]').forEach((row, i) => {
+    const seg = segs[i];
+    row.querySelectorAll('select').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const layout = row.querySelector('[data-f="layout"]').value;
+        const faceVal = row.querySelector('[data-f="primary_face_id"]').value;
+        const face = faceVal === '' ? null : parseInt(faceVal, 10);
+        const changed = (layout !== seg.layout) || (face !== seg.primary_face_id);
+        if (changed) {
+          edits.set(i, {
+            start: seg.start, end: seg.end,
+            layout, primary_face_id: face, primary_screen_idx: seg.primary_screen_idx,
+          });
+          row.classList.add('bg-indigo-900/20');
+        } else {
+          edits.delete(i);
+          row.classList.remove('bg-indigo-900/20');
+        }
+      });
+    });
+  });
+
+  content.querySelector('[data-act="save-scenes"]').onclick = async (e) => {
+    if (edits.size === 0) {
+      alert('Ничего не изменено');
+      return;
+    }
+    const btn = e.target;
+    btn.disabled = true;
+    btn.textContent = '⏳ применяю…';
+    const corrections = Array.from(edits.values());
+    try {
+      const card = slot.closest('[data-clip-idx]');
+      const r = await fetch(`/jobs/${jobId}/clips/${c.index}/corrections`, {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({corrections}),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({detail: r.status}));
+        alert('Ошибка: ' + (err.detail || r.status));
+        return;
+      }
+      const {clip} = await r.json();
+      const video = card.querySelector('video');
+      const _pf = clip.files['720p'] || clip.files['1080p'] || Object.values(clip.files || {})[0] || '';
+      video.src = _pf ? `/clips/${jobId}/${encodeURIComponent(_pf)}?t=${Date.now()}` : '';
+      const dlRow = card.querySelector('[data-dl-row]');
+      dlRow.innerHTML = Object.entries(clip.files).map(([res, fn]) =>
+        `<a href="/clips/${jobId}/${encodeURIComponent(fn)}" download class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">⬇ ${res}</a>`
+      ).join('');
+      Object.assign(c, clip);
+      // перезагружаем сцены
+      loaded = false;
+      await loadScenes(slot, jobId, c);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Применить коррекции (~30с)';
+    }
+  };
+}
+
+function renderTrimBlock(card, jobId, c) {
+  const slot = card.querySelector('[data-trim-block]');
+  slot.innerHTML = `
+    <details class="bg-slate-800/50 border border-slate-700 rounded-lg p-3 mb-3 text-sm">
+      <summary class="cursor-pointer font-medium">✂️ Тримминг (${formatTime(c.start)} – ${formatTime(c.end)})</summary>
+      <div class="mt-3 space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <div class="text-xs text-slate-400 mb-1">Начало (сек от исходника)</div>
+            <div class="flex items-center gap-1">
+              <button type="button" data-trim="start-1" class="px-2 py-1 bg-slate-700 rounded text-xs">−1</button>
+              <button type="button" data-trim="start-0.5" class="px-2 py-1 bg-slate-700 rounded text-xs">−0.5</button>
+              <input type="number" step="0.1" value="${c.start.toFixed(1)}" data-trim-start
+                class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-center font-mono text-sm">
+              <button type="button" data-trim="start+0.5" class="px-2 py-1 bg-slate-700 rounded text-xs">+0.5</button>
+              <button type="button" data-trim="start+1" class="px-2 py-1 bg-slate-700 rounded text-xs">+1</button>
+            </div>
+          </div>
+          <div>
+            <div class="text-xs text-slate-400 mb-1">Конец (сек от исходника)</div>
+            <div class="flex items-center gap-1">
+              <button type="button" data-trim="end-1" class="px-2 py-1 bg-slate-700 rounded text-xs">−1</button>
+              <button type="button" data-trim="end-0.5" class="px-2 py-1 bg-slate-700 rounded text-xs">−0.5</button>
+              <input type="number" step="0.1" value="${c.end.toFixed(1)}" data-trim-end
+                class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-center font-mono text-sm">
+              <button type="button" data-trim="end+0.5" class="px-2 py-1 bg-slate-700 rounded text-xs">+0.5</button>
+              <button type="button" data-trim="end+1" class="px-2 py-1 bg-slate-700 rounded text-xs">+1</button>
+            </div>
+          </div>
+        </div>
+        <div class="text-xs text-slate-400 flex items-center justify-between">
+          <span>Длительность: <span data-trim-dur class="text-slate-300 font-mono">${(c.end - c.start).toFixed(1)}с</span></span>
+          <button type="button" data-trim-apply class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium">
+            Применить (~30с)
+          </button>
+        </div>
+      </div>
+    </details>`;
+
+  const startInp = slot.querySelector('[data-trim-start]');
+  const endInp = slot.querySelector('[data-trim-end]');
+  const durEl = slot.querySelector('[data-trim-dur]');
+
+  function updateDur() {
+    const s = parseFloat(startInp.value) || 0;
+    const e = parseFloat(endInp.value) || 0;
+    durEl.textContent = (e - s).toFixed(1) + 'с';
+  }
+  startInp.oninput = endInp.oninput = updateDur;
+
+  slot.querySelectorAll('[data-trim^="start"], [data-trim^="end"]').forEach(btn => {
+    btn.onclick = () => {
+      const action = btn.dataset.trim;
+      const target = action.startsWith('start') ? startInp : endInp;
+      const delta = parseFloat(action.replace(/^(start|end)/, ''));
+      target.value = (parseFloat(target.value) + delta).toFixed(1);
+      updateDur();
+    };
+  });
+
+  slot.querySelector('[data-trim-apply]').onclick = async (e) => {
+    const btn = e.target;
+    const newStart = parseFloat(startInp.value);
+    const newEnd = parseFloat(endInp.value);
+    btn.disabled = true;
+    btn.textContent = '⏳ рендерю…';
+    try {
+      const r = await fetch(`/jobs/${jobId}/clips/${c.index}/retrim`, {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({start: newStart, end: newEnd}),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({detail: r.status}));
+        alert('Ошибка: ' + (err.detail || r.status));
+        return;
+      }
+      const {clip} = await r.json();
+      // обновляем плеер и кнопки
+      const video = card.querySelector('video');
+      const _pf = clip.files['720p'] || clip.files['1080p'] || Object.values(clip.files || {})[0] || '';
+      video.src = _pf ? `/clips/${jobId}/${encodeURIComponent(_pf)}?t=${Date.now()}` : '';
+      const dlRow = card.querySelector('[data-dl-row]');
+      dlRow.innerHTML = Object.entries(clip.files).map(([res, fn]) =>
+        `<a href="/clips/${jobId}/${fn}" download
+           class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">⬇ ${res}</a>`
+      ).join('');
+      // обновляем тайм-метку в заголовке details + перерисовываем блок
+      Object.assign(c, clip);
+      renderTrimBlock(card, jobId, clip);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Применить (~30с)';
+    }
+  };
+}
+
+function renderMetaBlock(card, jobId, c) {
+  const slot = card.querySelector('[data-meta-block]');
+  const hasMeta = c.meta_title || (c.meta_descriptions && Object.keys(c.meta_descriptions).length);
+  if (!hasMeta) {
+    slot.innerHTML = `
+      <div class="bg-slate-800/50 border border-slate-700 rounded-lg p-3 mb-3 text-sm">
+        <div class="flex items-center justify-between">
+          <div class="text-slate-400">📝 SEO-метаданные не сгенерированы</div>
+          <button data-act="gen-meta" class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs font-medium">сгенерировать</button>
+        </div>
+      </div>`;
+    slot.querySelector('[data-act="gen-meta"]').onclick = (e) => regenMeta(jobId, c.index, card, e.target);
+    return;
+  }
+  const platforms = ['youtube', 'instagram', 'vk'];
+  const labels = {youtube: 'YouTube', instagram: 'Instagram', vk: 'ВК'};
+  slot.innerHTML = `
+    <details class="bg-slate-800/50 border border-slate-700 rounded-lg p-3 mb-3 text-sm" open>
+      <summary class="cursor-pointer flex items-center justify-between">
+        <span class="font-medium">📝 SEO-метаданные</span>
+        <button data-act="regen-meta" type="button" class="text-xs text-slate-400 hover:text-white px-2 py-0.5 rounded border border-slate-700">обновить</button>
+      </summary>
+      <div class="mt-3 space-y-2">
+        <div>
+          <div class="flex items-center justify-between">
+            <div class="text-xs text-slate-400">Заголовок</div>
+            <button class="text-xs text-indigo-400" data-copy="title">копировать</button>
+          </div>
+          <div class="bg-slate-900 rounded px-2 py-1.5 text-sm" data-meta-title>${escapeHtml(c.meta_title || c.title)}</div>
+        </div>
+        <div class="flex gap-2 mt-2 border-b border-slate-700">
+          ${platforms.map((p, i) =>
+            `<button data-tab="${p}" class="px-3 py-1.5 text-xs ${i===0?'text-white border-b-2 border-indigo-500':'text-slate-400'}">${labels[p]}</button>`
+          ).join('')}
+        </div>
+        ${platforms.map((p, i) => `
+          <div data-pane="${p}" class="${i===0?'':'hidden'} space-y-2">
+            <div>
+              <div class="flex items-center justify-between">
+                <div class="text-xs text-slate-400">Описание</div>
+                <button class="text-xs text-indigo-400" data-copy="desc-${p}">копировать</button>
+              </div>
+              <textarea readonly class="w-full bg-slate-900 rounded px-2 py-1.5 text-sm font-mono leading-snug" rows="5" data-meta-desc="${p}">${escapeHtml(c.meta_descriptions?.[p] || '')}</textarea>
+            </div>
+            <div>
+              <div class="flex items-center justify-between">
+                <div class="text-xs text-slate-400">Хэштеги</div>
+                <button class="text-xs text-indigo-400" data-copy="tags-${p}">копировать</button>
+              </div>
+              <div class="bg-slate-900 rounded px-2 py-1.5 text-sm" data-meta-tags="${p}">${(c.meta_hashtags?.[p] || []).map(escapeHtml).join(' ')}</div>
+            </div>
+            ${c.meta_lead_links?.[p] ? `<div class="text-xs text-slate-400 break-all">UTM: ${escapeHtml(c.meta_lead_links[p])}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </details>`;
+  // tab switching
+  slot.querySelectorAll('[data-tab]').forEach(btn => {
+    btn.onclick = () => {
+      const target = btn.dataset.tab;
+      slot.querySelectorAll('[data-tab]').forEach(b => {
+        const sel = b.dataset.tab === target;
+        b.className = `px-3 py-1.5 text-xs ${sel ? 'text-white border-b-2 border-indigo-500' : 'text-slate-400'}`;
+      });
+      slot.querySelectorAll('[data-pane]').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== target));
+    };
+  });
+  // copy buttons
+  slot.querySelectorAll('[data-copy]').forEach(btn => {
+    btn.onclick = () => {
+      const k = btn.dataset.copy;
+      let text = '';
+      if (k === 'title') text = slot.querySelector('[data-meta-title]').textContent;
+      else if (k.startsWith('desc-')) text = slot.querySelector(`[data-meta-desc="${k.slice(5)}"]`).value;
+      else if (k.startsWith('tags-')) text = slot.querySelector(`[data-meta-tags="${k.slice(5)}"]`).textContent;
+      navigator.clipboard.writeText(text);
+      const orig = btn.textContent; btn.textContent = '✓';
+      setTimeout(() => btn.textContent = orig, 1200);
+    };
+  });
+  slot.querySelector('[data-act="regen-meta"]').onclick = (e) => regenMeta(jobId, c.index, card, e.target);
+}
+
+async function regenMeta(jobId, clipIdx, card, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '⏳ генерирую…';
+  try {
+    const r = await fetch(`/jobs/${jobId}/clips/${clipIdx}/regen-meta`, {method: 'POST'});
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.status}));
+      alert('Ошибка: ' + (err.detail || r.status));
+      return;
+    }
+    const {clip} = await r.json();
+    renderMetaBlock(card, jobId, clip);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function restyleClip(jobId, clipIdx, template, card, clickedBtn) {
+  const tplRow = card.querySelector('[data-tpl-row]');
+  const buttons = tplRow.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  const oldText = clickedBtn.textContent;
+  clickedBtn.textContent = '⏳ ' + oldText;
+
+  try {
+    const r = await fetch(`/jobs/${jobId}/clips/${clipIdx}/restyle`, {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({template}),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: 'ошибка'}));
+      alert('Ошибка: ' + (err.detail || r.status));
+      return;
+    }
+    const {clip} = await r.json();
+    // обновляем плеер и кнопки скачивания
+    const video = card.querySelector('video');
+    const _pf = clip.files['720p'] || clip.files['1080p'] || Object.values(clip.files || {})[0] || '';
+    video.src = _pf ? `/clips/${jobId}/${encodeURIComponent(_pf)}?t=${Date.now()}` : '';
+    const dlRow = card.querySelector('[data-dl-row]');
+    dlRow.innerHTML = Object.entries(clip.files).map(([res, fn]) =>
+      `<a href="/clips/${jobId}/${encodeURIComponent(fn)}" download
+         class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
+         ⬇ ${res}
+       </a>`).join('');
+    // обновляем выделение шаблонов
+    buttons.forEach(b => {
+      const sel = b === clickedBtn;
+      b.className = 'px-2.5 py-1 rounded text-xs border transition ' +
+        (sel ? 'bg-indigo-600 border-indigo-500 text-white'
+             : 'bg-slate-800 border-slate-700 hover:border-indigo-500');
+    });
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+    clickedBtn.textContent = oldText;
+  }
+}
+
+function formatEta(s) {
+  s = Math.round(s);
+  if (s < 60) return s + 'с';
+  const m = Math.floor(s / 60), sec = s % 60;
+  if (m < 60) return `${m}м ${String(sec).padStart(2,'0')}с`;
+  const h = Math.floor(m / 60);
+  return `${h}ч ${String(m % 60).padStart(2,'0')}м`;
+}
+function formatTime(s) {
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2,'0')}`;
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+</body>
+</html>

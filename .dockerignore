@@ -1,0 +1,55 @@
+# Локальный кэш и venv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Job state — каждый клиент имеет свой
+jobs/
+output/
+downloads/
+.effects_cache/
+
+# Mac-specific модели mlx (не работают в Linux Docker)
+mlx_models/
+
+# Закрытые секреты — НИКОГДА не в Docker context
+brand_kernel_poc/_keys/
+brand_kernel_poc/dist/
+brand_kernel_poc/server/registrations.db
+brand_kernel_poc/server/*.db
+
+# 🔴 КРИТИЧНО: OAuth tokens к YouTube/VK/Google
+# Без этого исключения они попадают в публичный Docker образ через
+# COPY branding/ — что означает access к чужим аккаунтам.
+branding/_oauth/
+
+# Brand assets — публикуются ЗАШИФРОВАННЫМИ через registration server,
+# не plain в Docker image (иначе теряется смысл brand_kernel).
+# В образ копируются только через `docker compose` volume mount от клиента,
+# либо через registration → ~/.excella/assets/*.enc
+branding/_assets/
+branding/excella.json
+branding/*.json
+branding/*.json.enc
+
+# Сборочные артефакты Cython
+brand_kernel_poc/build/
+brand_kernel_poc/brand_kernel/_kernel.c
+brand_kernel_poc/brand_kernel/_kernel.cpython-*.so
+
+# Mac-specific brand kernel в vendor (Linux пересоберёт свою)
+vendor/brand_kernel/_kernel.cpython-darwin.so
+vendor/brand_kernel/_kernel.cpython-*.so
+vendor/brand_kernel/__pycache__/
+
+# Локальные dotfiles
+.env
+.git/
+.gitignore
+.DS_Store
+
+# Документация и временные тестовые скрипты
+docs/_build/
+/tmp/

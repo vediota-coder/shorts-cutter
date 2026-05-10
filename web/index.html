@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>shorts-cutter · Excella</title>
+
+  <!-- Шрифты Excella: Unbounded для display, Inter для тела, JetBrains Mono для кода -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+
+  <!-- Excella-стилевая база (палитра, glass, lime-mark, шрифты) -->
+  <link rel="stylesheet" href="/preview/styles.css?v=20"/>
+
+  <!-- Tailwind v4 (Play CDN) — токены excella + utility-классы -->
+  <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-lime: #C6FF3D;
+      --color-lime-bright: #B8FF00;
+      --color-lime-soft: #ECFFB8;
+      --color-lime-deep: #4A6A00;
+      --color-ink: #11140F;
+      --color-ink-2: #2A2E25;
+      --color-muted: #6B6F66;
+      --color-muted-2: #9B9F95;
+      --color-paper: #FBFAF5;
+      --color-paper-2: #F2F1EB;
+      --color-line: rgba(17, 20, 15, 0.08);
+      --color-line-2: rgba(17, 20, 15, 0.05);
+      --color-danger: #E04A3F;
+      --color-green: #2EA052;
+      --font-display: "Unbounded", "Inter", system-ui, sans-serif;
+      --font-body: "Inter", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, monospace;
+      --radius-pill: 999px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React + Babel (pinned) -->
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+  <!-- App scripts (живут в /preview/) — ?v= cache-buster для dev-режима -->
+  <script src="/preview/i18n.jsx?v=20"></script>
+  <script src="/preview/mock-data.jsx?v=20"></script>
+  <script src="/preview/api.jsx?v=20"></script>
+  <script type="text/babel" src="/preview/tweaks-panel.jsx?v=20"></script>
+  <script type="text/babel" src="/preview/ui.jsx?v=20"></script>
+  <script type="text/babel" src="/preview/hero-cut.jsx?v=20"></script>
+  <script type="text/babel" src="/preview/progress-clips.jsx?v=20"></script>
+  <script type="text/babel" src="/preview/modals.jsx?v=20"></script>
+  <script type="text/babel" src="/preview/app.jsx?v=20"></script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+# ════════════════════════════════════════════════════════════════════════
+# КРИТИЧНО: всё что ниже НИКОГДА не должно попасть в публичный GitHub.
+# Если что-то добавляете — добавьте сюда ДО `git add`.
+# ════════════════════════════════════════════════════════════════════════
+
+# ── Секреты ────────────────────────────────────────────────────────────
+.env
+.env.local
+*.pem
+*.key
+**/private_key*
+brand_kernel_poc/_keys/
+
+# OAuth токены к YouTube/VK/Instagram/Google — РЕАЛЬНЫЕ credentials
+branding/_oauth/
+
+# Лицензии и подписанные ассеты конкретных клиентов (тестовых тоже)
+brand_kernel_poc/dist/
+
+# CRM база регистраций
+brand_kernel_poc/server/registrations.db
+brand_kernel_poc/server/*.db
+
+# ── Скомпилированные kernel-бинарники ──────────────────────────────────
+# .so/.pyd должны собираться в CI matrix, не commit'иться.
+# Mac .so в репо привяжет навсегда public_key к private_key из _keys/,
+# который НЕ должен быть production ключом.
+vendor/brand_kernel/_kernel.cpython-*.so
+vendor/brand_kernel/_kernel.cpython-*.pyd
+vendor/brand_kernel/__pycache__/
+brand_kernel_poc/brand_kernel/_kernel.cpython-*.so
+brand_kernel_poc/brand_kernel/_kernel.cpython-*.pyd
+brand_kernel_poc/brand_kernel/_kernel.c
+brand_kernel_poc/build/
+
+# ── ML модели и кэши (большие, скачиваются при первом старте) ──────────
+mlx_models/
+.cache/
+.effects_cache/
+yolo*.pt
+*.tflite
+
+# ── Brand assets ───────────────────────────────────────────────────────
+# Master ассеты (PNG логотип, JSON template) распространяются ЗАШИФРОВАННЫМИ
+# через registration server. В публичном репо НЕ должны быть открытыми —
+# иначе теряется смысл brand_kernel.
+branding/_assets/
+branding/excella.json
+branding/excella.json.enc
+branding/*.json
+branding/*.json.enc
+!branding/.gitkeep
+
+# ── Job state, выходные файлы клиентов ────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+downloads/
+output/
+jobs/
+*.mp4
+*.mp3
+*.wav
+
+# Runtime drag-and-drop загрузки в UI preview
+web/preview/uploads/
+
+# ── Site builds ───────────────────────────────────────────────────────
+site/
+docs/_build/
+
+# ── Системное ──────────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/
+
+# ── Логи ──────────────────────────────────────────────────────────────
+*.log
+
+# ── Бэкапы pyarmor build/ ─────────────────────────────────────────────
+build/
+dist/

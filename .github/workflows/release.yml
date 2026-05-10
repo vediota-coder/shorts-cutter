@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Build kernel.so на 3 платформах через matrix
+  # ─────────────────────────────────────────────────────────────
+  build-kernel:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14            # Apple Silicon
+            platform: darwin-arm64
+            python: '3.13'
+            ext: so
+          - os: macos-13            # Intel Mac
+            platform: darwin-x86_64
+            python: '3.13'
+            ext: so
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            python: '3.13'
+            ext: so
+          - os: windows-2022
+            platform: windows-x86_64
+            python: '3.13'
+            ext: pyd
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install setuptools cython==3.2.* cryptography==48.*
+
+      - name: Inject release secrets into _kernel.pyx
+        env:
+          EXCELLA_PUBLIC_KEY_PEM: ${{ secrets.EXCELLA_PUBLIC_KEY_PEM }}
+        shell: python
+        run: |
+          # Заменяем placeholder __PLACEHOLDER_PUBLIC_KEY__ или существующий public_key
+          # на тот что хранится в GitHub Secrets. Это ОДИН и тот же ключ для всех
+          # платформ — все .so будут проверять лицензии одной парой ключей.
+          import os
+          import re
+          from pathlib import Path
+
+          pyx = Path("brand_kernel_poc/brand_kernel/_kernel.pyx")
+          src = pyx.read_text()
+          pubkey = os.environ.get("EXCELLA_PUBLIC_KEY_PEM", "").strip()
+          if not pubkey:
+              raise SystemExit("ERROR: EXCELLA_PUBLIC_KEY_PEM не задан в Secrets")
+          # Вписываем в _PUBLIC_KEY_PEM = b"""...-----END PUBLIC KEY-----"""
+          new_src = re.sub(
+              r'_PUBLIC_KEY_PEM = b"""[\s\S]*?-----END PUBLIC KEY-----"""',
+              f'_PUBLIC_KEY_PEM = b"""{pubkey}"""',
+              src,
+              count=1,
+          )
+          if new_src == src:
+              raise SystemExit("ERROR: не нашёл _PUBLIC_KEY_PEM в .pyx")
+          pyx.write_text(new_src)
+          print("✓ public key injected")
+
+      - name: Build kernel
+        working-directory: brand_kernel_poc
+        run: python setup.py build_ext --inplace
+
+      - name: Verify kernel works (smoke)
+        working-directory: brand_kernel_poc
+        run: |
+          python -c "from brand_kernel import kernel_info, get_machine_fp; print(kernel_info()); print('fp:', get_machine_fp()[:16])"
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.platform }}
+          path: brand_kernel_poc/brand_kernel/_kernel.cpython-*.${{ matrix.ext }}
+
+  # ─────────────────────────────────────────────────────────────
+  # Сборка release archive
+  # ─────────────────────────────────────────────────────────────
+  package-release:
+    needs: build-kernel
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: kernels/
+
+      - name: Prepare release tarballs
+        run: |
+          set -e
+          VERSION=${GITHUB_REF#refs/tags/}
+          [ -z "$VERSION" ] && VERSION=${{ github.event.inputs.tag }}
+          mkdir -p release-staging
+
+          # Источники общие для всех платформ
+          mkdir -p excella-cutter-${VERSION}
+          cp -r src web branding scripts vendor/LR-ASD requirements.txt yolo26n.pt \
+                excella-cutter-${VERSION}/
+          mkdir -p excella-cutter-${VERSION}/vendor/brand_kernel
+          cp brand_kernel_poc/brand_kernel/__init__.py \
+                excella-cutter-${VERSION}/vendor/brand_kernel/
+          echo "${VERSION}" > excella-cutter-${VERSION}/version.txt
+
+          # На каждую платформу — свой tar.gz с подходящим .so/.pyd
+          for plat_dir in kernels/kernel-*; do
+            plat=$(basename "$plat_dir" | sed 's/^kernel-//')
+            workdir="release-staging/${plat}"
+            cp -r excella-cutter-${VERSION} "$workdir"
+            cp "$plat_dir"/* "$workdir/vendor/brand_kernel/"
+            tar -czf "excella-cutter-${VERSION}-${plat}.tar.gz" -C release-staging "$plat"
+            sha256sum "excella-cutter-${VERSION}-${plat}.tar.gz" \
+                | awk '{print $1}' > "excella-cutter-${VERSION}-${plat}.tar.gz.sha256"
+          done
+          ls -la excella-cutter-*.tar.gz*
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            excella-cutter-*.tar.gz
+            excella-cutter-*.tar.gz.sha256
+            docker-compose.yml
+          generate_release_notes: true
+
+  # ─────────────────────────────────────────────────────────────
+  # Docker multi-arch (amd64 + arm64)
+  # ─────────────────────────────────────────────────────────────
+  build-docker:
+    needs: build-kernel
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            EXCELLA_PUBLIC_KEY_PEM=${{ secrets.EXCELLA_PUBLIC_KEY_PEM }}
