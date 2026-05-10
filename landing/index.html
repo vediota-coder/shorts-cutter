@@ -84,8 +84,9 @@ button { font-family: inherit; }
 
 /* container */
 .wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; position: relative; z-index: 2; }
-.section { padding-block: clamp(96px, 12vw, 168px); position: relative; }
+.section { padding-block: clamp(64px, 7vw, 104px); position: relative; }
 .section + .section { border-top: 1px solid var(--line); }
+.section.tight { padding-block: clamp(48px, 5vw, 72px); }
 
 /* nav */
 .nav {
@@ -311,11 +312,11 @@ h1.hero-title {
 .poweredby {
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  padding-block: 28px;
+  padding-block: 32px;
   background: var(--paper-2);
 }
 .poweredby-inner {
-  display: flex; align-items: center; gap: 36px;
+  display: flex; align-items: center; gap: 40px;
   flex-wrap: wrap;
   justify-content: center;
 }
@@ -325,17 +326,30 @@ h1.hero-title {
   text-transform: uppercase;
   letter-spacing: 0.16em;
   color: var(--muted);
+  flex-shrink: 0;
 }
 .poweredby-list {
-  display: flex; align-items: center; gap: 28px;
+  display: flex; align-items: center; gap: 32px;
   flex-wrap: wrap;
 }
-.poweredby-list span {
+.poweredby-list .logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
   font-family: var(--font-display);
   font-weight: 500;
-  font-size: 16px;
+  font-size: 15px;
   color: var(--ink-2);
   letter-spacing: -0.01em;
+  text-decoration: none;
+  opacity: 0.65;
+  transition: opacity 0.18s var(--ease);
+}
+.poweredby-list .logo:hover { opacity: 1; }
+.poweredby-list .logo img {
+  height: 20px;
+  width: auto;
+  display: block;
 }
 
 /* numbers */
@@ -378,8 +392,8 @@ h1.hero-title {
 
 /* section heading */
 .sect-head {
-  display: flex; flex-direction: column; gap: 14px;
-  margin-bottom: 56px;
+  display: flex; flex-direction: column; gap: 12px;
+  margin-bottom: 40px;
   max-width: 720px;
 }
 .sect-head h2 {
@@ -716,13 +730,68 @@ h1.hero-title {
 .terminal-foot .copy:hover { background: rgba(198,255,61,0.08); }
 
 /* about */
+.about-section {
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 0 !important;
+}
 .about {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 56px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 320px);
+  gap: 48px;
+  align-items: end;
+  position: relative;
+  z-index: 2;
 }
-@media (max-width: 980px) { .about { grid-template-columns: 1fr; gap: 36px; } }
+@media (max-width: 1080px) {
+  .about { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+  .about-portrait { display: none; }
+}
+@media (max-width: 980px) { .about { grid-template-columns: 1fr; gap: 36px; align-items: start; } }
+.about-portrait {
+  position: relative;
+  align-self: end;
+  margin-bottom: -1px;
+  margin-top: -64px;
+}
+.about-portrait img {
+  width: 100%;
+  height: auto;
+  display: block;
+  user-select: none;
+  pointer-events: none;
+  filter: contrast(1.02) saturate(1.05);
+}
+.about-portrait::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 80px;
+  background: linear-gradient(180deg, transparent 0%, var(--paper) 92%);
+  pointer-events: none;
+}
+.about-portrait .badge {
+  position: absolute;
+  left: -28px; top: 18%;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  text-transform: uppercase;
+  box-shadow: 0 8px 22px rgba(0,0,0,0.06);
+  z-index: 3;
+}
+.about-portrait .badge .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 0 3px rgba(196,248,74,0.25);
+}
 .pull-quote {
   font-family: var(--font-display);
   font-weight: 500;
@@ -1070,12 +1139,30 @@ footer.foot {
   <div class="poweredby-inner">
     <div class="poweredby-label">Под капотом</div>
     <div class="poweredby-list">
-      <span>yt-dlp</span>
-      <span>faster-whisper</span>
-      <span>Mediapipe</span>
-      <span>ffmpeg</span>
-      <span>Claude API</span>
-      <span>FastAPI</span>
+      <a class="logo" href="https://github.com/yt-dlp/yt-dlp" target="_blank" rel="noopener" title="yt-dlp">
+        <img src="https://cdn.simpleicons.org/youtube/0A0D0A" alt="" loading="lazy" width="20" height="20">
+        <span>yt-dlp</span>
+      </a>
+      <a class="logo" href="https://github.com/SYSTRAN/faster-whisper" target="_blank" rel="noopener" title="faster-whisper">
+        <img src="https://cdn.simpleicons.org/openai/0A0D0A" alt="" loading="lazy" width="20" height="20">
+        <span>faster-whisper</span>
+      </a>
+      <a class="logo" href="https://mediapipe.dev/" target="_blank" rel="noopener" title="MediaPipe">
+        <img src="https://cdn.simpleicons.org/google/0A0D0A" alt="" loading="lazy" width="20" height="20">
+        <span>MediaPipe</span>
+      </a>
+      <a class="logo" href="https://ffmpeg.org/" target="_blank" rel="noopener" title="ffmpeg">
+        <img src="https://cdn.simpleicons.org/ffmpeg/0A0D0A" alt="" loading="lazy" width="20" height="20">
+        <span>ffmpeg</span>
+      </a>
+      <a class="logo" href="https://www.anthropic.com/api" target="_blank" rel="noopener" title="Claude API">
+        <img src="https://cdn.simpleicons.org/anthropic/0A0D0A" alt="" loading="lazy" width="20" height="20">
+        <span>Claude API</span>
+      </a>
+      <a class="logo" href="https://fastapi.tiangolo.com/" target="_blank" rel="noopener" title="FastAPI">
+        <img src="https://cdn.simpleicons.org/fastapi/0A0D0A" alt="" loading="lazy" width="20" height="20">
+        <span>FastAPI</span>
+      </a>
     </div>
   </div>
 </div>
@@ -1336,7 +1423,7 @@ footer.foot {
 </section>
 
 <a id="about"></a>
-<section class="section">
+<section class="section about-section">
   <div class="wrap">
     <div class="sect-head reveal" style="margin-bottom: 36px;">
       <div class="eyebrow">Кто за этим стоит</div>
@@ -1373,6 +1460,10 @@ footer.foot {
             excella.ru
           </a>
         </div>
+      </div>
+      <div class="about-portrait" aria-hidden="true">
+        <div class="badge"><span class="dot"></span>Online</div>
+        <img src="assets/portrait.png" alt="Vediota" loading="lazy">
       </div>
     </div>
 
