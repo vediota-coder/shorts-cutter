@@ -1,0 +1,1620 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>shorts-cutter — длинное видео в шортсы локально · Excella</title>
+<meta name="description" content="Локальный пайплайн: yt-dlp + faster-whisper + Mediapipe + ffmpeg. Claude API выбирает 5–10 лучших моментов, face tracking держит спикера в кадре, субтитры подтягиваются автоматически. MIT, self-host.">
+<meta property="og:title" content="shorts-cutter — длинное видео в шортсы">
+<meta property="og:description" content="Локальный пайплайн на M-чипе: транскрипция, выбор моментов, face tracking, субтитры. MIT.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;500;600;700;800;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+:root {
+  --lime: #C6FF3D;
+  --lime-bright: #B8FF00;
+  --lime-soft: #ECFFB8;
+  --lime-deep: #4A6A00;
+  --ink: #11140F;
+  --ink-2: #2A2E25;
+  --ink-3: #0E110C;
+  --muted: #6B6F66;
+  --muted-2: #9B9F95;
+  --paper: #FBFAF5;
+  --paper-2: #F2F1EB;
+  --bg-3: #FFFFFF;
+  --line: rgba(17,20,15,0.08);
+  --line-strong: rgba(17,20,15,0.14);
+  --line-soft: rgba(17,20,15,0.04);
+  --indigo: #1E1B4B;
+  --indigo-2: #2B2766;
+  --indigo-3: #3B3680;
+
+  --font-display: "Unbounded","Inter",system-ui,-apple-system,sans-serif;
+  --font-body: "Inter",system-ui,-apple-system,sans-serif;
+  --font-mono: "JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --radius-pill: 999px;
+  --radius-s: 10px;
+  --radius-m: 16px;
+  --radius-l: 22px;
+  --radius-xl: 28px;
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.7) inset, 0 1px 2px rgba(17,20,15,0.04), 0 8px 24px rgba(17,20,15,0.06);
+  --ease: cubic-bezier(.4,0,.2,1);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/></svg>");
+  opacity: 0.04;
+  mix-blend-mode: multiply;
+  z-index: 1;
+}
+img { max-width: 100%; display: block; }
+a { color: inherit; text-decoration: none; }
+button { font-family: inherit; }
+
+.tabular { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.eyebrow.bright { color: var(--ink); }
+
+/* container */
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; position: relative; z-index: 2; }
+.section { padding-block: clamp(96px, 12vw, 168px); position: relative; }
+.section + .section { border-top: 1px solid var(--line); }
+
+/* nav */
+.nav {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(251,250,245,0.78);
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+.nav-inner {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 64px;
+  max-width: 1240px; margin: 0 auto; padding: 0 28px;
+}
+.brand {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--font-display);
+  font-weight: 700; font-size: 16px; letter-spacing: -0.01em;
+}
+.brand-mark {
+  display: inline-grid; place-items: center;
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--lime);
+  font-family: var(--font-mono);
+  font-weight: 700; font-size: 14px;
+  line-height: 1;
+}
+.nav-links { display: flex; gap: 4px; align-items: center; }
+.nav-links a {
+  padding: 8px 12px; border-radius: var(--radius-pill);
+  font-size: 14px; font-weight: 500; color: var(--ink-2);
+  transition: background 0.18s var(--ease), color 0.18s var(--ease);
+}
+.nav-links a:hover { background: var(--paper-2); color: var(--ink); }
+.nav-cta {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 16px; border-radius: var(--radius-pill);
+  background: var(--ink); color: var(--paper);
+  font-size: 13px; font-weight: 600; letter-spacing: 0.01em;
+  border: 1px solid var(--ink);
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.nav-cta:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,0.12); }
+.nav-cta .star { color: var(--lime); }
+
+@media (max-width: 880px) {
+  .nav-links { display: none; }
+}
+
+/* hero */
+.hero { padding-top: clamp(64px, 8vw, 96px); padding-bottom: clamp(64px, 8vw, 96px); position: relative; overflow: hidden; }
+.hero-bg {
+  position: absolute; inset: -10% -10% 0 -10%;
+  background:
+    radial-gradient(ellipse 70% 50% at 80% 0%, rgba(198,255,61,0.32) 0%, rgba(198,255,61,0) 60%),
+    radial-gradient(ellipse 60% 40% at 0% 30%, rgba(198,255,61,0.14) 0%, rgba(198,255,61,0) 50%);
+  pointer-events: none; z-index: 0;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 56px;
+  align-items: center;
+  position: relative;
+  z-index: 2;
+}
+@media (max-width: 1080px) {
+  .hero-grid { grid-template-columns: 1fr; gap: 48px; }
+}
+.hero-eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-bottom: 28px;
+}
+.hero-eyebrow::before {
+  content: ""; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 0 4px rgba(198,255,61,0.25);
+}
+h1.hero-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(54px, 8.6vw, 120px);
+  line-height: 0.93;
+  letter-spacing: -0.035em;
+  color: var(--ink);
+  margin: 0 0 28px;
+}
+.h-mark {
+  display: inline-block;
+  position: relative;
+  white-space: nowrap;
+}
+.h-mark svg {
+  position: absolute;
+  left: -2%; right: -2%;
+  bottom: 6%;
+  width: 104%;
+  height: 60%;
+  z-index: -1;
+  pointer-events: none;
+}
+.hero-sub {
+  font-size: clamp(18px, 1.6vw, 22px);
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 580px;
+  margin: 0 0 36px;
+}
+.hero-cta-row {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  margin-bottom: 28px;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  border-radius: var(--radius-pill);
+  font-size: 14px; font-weight: 600; letter-spacing: 0.005em;
+  padding: 14px 22px;
+  border: 1px solid transparent;
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), background 0.18s var(--ease), color 0.18s var(--ease);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn-primary {
+  background: var(--lime); color: var(--ink);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 8px 22px rgba(74,106,0,0.18);
+}
+.btn-primary:hover { background: var(--lime-bright); box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 12px 28px rgba(74,106,0,0.24); }
+.btn-secondary {
+  background: var(--bg-3); color: var(--ink);
+  border-color: var(--line-strong);
+}
+.btn-secondary:hover { background: var(--paper-2); }
+.btn-ghost { background: transparent; color: var(--ink-2); }
+.btn-ghost:hover { background: var(--paper-2); }
+.btn .arr { display: inline-block; transition: transform 0.18s var(--ease); }
+.btn:hover .arr { transform: translateX(2px); }
+
+.hero-gh {
+  display: inline-flex; align-items: stretch; gap: 0;
+  border-radius: var(--radius-pill);
+  background: var(--ink); color: var(--paper);
+  font-family: var(--font-mono); font-size: 13px; font-weight: 500;
+  border: 1px solid var(--ink);
+  overflow: hidden;
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.hero-gh:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(0,0,0,0.18); }
+.hero-gh-l, .hero-gh-r { padding: 12px 18px; display: inline-flex; align-items: center; gap: 8px; }
+.hero-gh-l { border-right: 1px solid rgba(255,255,255,0.1); }
+.hero-gh-r { background: var(--ink-2); color: var(--lime); }
+.hero-gh-r .star { font-size: 14px; }
+
+.hero-meta {
+  display: flex; flex-wrap: wrap; gap: 18px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
+.hero-meta span::before {
+  content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--muted-2);
+}
+.hero-meta span:first-child::before { display: none; }
+
+/* hero monitor mock */
+.monitor {
+  position: relative;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #1a1d18 0%, #0E110C 100%);
+  padding: 14px 14px 22px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.05) inset,
+    0 0 0 1px rgba(255,255,255,0.06) inset,
+    0 24px 60px rgba(17,20,15,0.18),
+    0 60px 140px rgba(17,20,15,0.12);
+}
+.monitor::before {
+  content: "";
+  position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+  width: 60px; height: 6px; border-radius: 6px; background: rgba(255,255,255,0.04);
+}
+.monitor-screen {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--paper);
+  aspect-ratio: 16 / 10;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.monitor-screen img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+.monitor-bezel {
+  display: flex; justify-content: center; align-items: center; gap: 5px;
+  margin-top: 12px; height: 4px;
+}
+.monitor-bezel span { width: 4px; height: 4px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+
+.float-chip {
+  position: absolute; right: -14px; bottom: -22px;
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 12px 18px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+  letter-spacing: 0.02em;
+  box-shadow: 0 14px 30px rgba(17,20,15,0.10);
+  z-index: 3;
+}
+.float-chip .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--lime); display: inline-block;
+  box-shadow: 0 0 0 3px rgba(198,255,61,0.3);
+}
+@media (max-width: 540px) {
+  .float-chip { right: 0; bottom: -18px; font-size: 11px; padding: 10px 14px; }
+}
+
+/* powered-by strip */
+.poweredby {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding-block: 28px;
+  background: var(--paper-2);
+}
+.poweredby-inner {
+  display: flex; align-items: center; gap: 36px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.poweredby-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+}
+.poweredby-list {
+  display: flex; align-items: center; gap: 28px;
+  flex-wrap: wrap;
+}
+.poweredby-list span {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 16px;
+  color: var(--ink-2);
+  letter-spacing: -0.01em;
+}
+
+/* numbers */
+.numbers {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--bg-3);
+  overflow: hidden;
+}
+@media (max-width: 880px) { .numbers { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 540px) { .numbers { grid-template-columns: 1fr; } }
+.num-cell {
+  padding: 36px 28px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+@media (min-width: 881px) {
+  .num-cell:nth-child(4n) { border-right: none; }
+  .num-cell:nth-child(n+1) { border-bottom: none; }
+}
+.num-value {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: clamp(48px, 6vw, 84px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  margin-bottom: 14px;
+}
+.num-value .accent { color: var(--lime-deep); }
+.num-label {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+  max-width: 220px;
+}
+
+/* section heading */
+.sect-head {
+  display: flex; flex-direction: column; gap: 14px;
+  margin-bottom: 56px;
+  max-width: 720px;
+}
+.sect-head h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(36px, 4.6vw, 64px);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+.sect-head p {
+  font-size: clamp(16px, 1.4vw, 19px);
+  color: var(--muted);
+  margin: 0;
+  max-width: 580px;
+}
+
+/* pipeline */
+.pipeline-row {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 64px;
+  align-items: center;
+  padding-block: clamp(56px, 7vw, 96px);
+  border-top: 1px dashed var(--line-strong);
+}
+.pipeline-row:first-of-type { border-top: none; padding-top: 0; }
+.pipeline-row:last-of-type { padding-bottom: 0; }
+@media (max-width: 980px) {
+  .pipeline-row { grid-template-columns: 1fr; gap: 36px; }
+}
+.pipe-step-num {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.pipe-step-num span { color: var(--ink); font-weight: 600; }
+.pipe-row-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(28px, 3.2vw, 44px);
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  margin: 0 0 16px;
+}
+.pipe-row-desc {
+  font-size: 16px;
+  color: var(--muted);
+  margin: 0 0 22px;
+  max-width: 460px;
+}
+.pipe-row-tags {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.tag {
+  display: inline-flex; align-items: center;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+
+.pipe-vis {
+  position: relative;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  padding: 24px;
+  box-shadow: var(--shadow-card);
+  min-height: 280px;
+}
+
+/* step 1: paste */
+.vis-paste {
+  display: flex; flex-direction: column; gap: 14px;
+  font-family: var(--font-mono); font-size: 13px;
+}
+.vis-paste-input {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-m);
+  background: var(--paper);
+}
+.vis-paste-input .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; }
+.vis-paste-input .url { color: var(--ink); }
+.vis-progress {
+  height: 8px; border-radius: var(--radius-pill); background: var(--paper-2); position: relative; overflow: hidden;
+}
+.vis-progress::after {
+  content: ""; position: absolute; top: 0; left: 0; bottom: 0; width: 64%;
+  background: linear-gradient(90deg, var(--lime) 0%, var(--lime-bright) 100%);
+  border-radius: var(--radius-pill);
+}
+.vis-progress-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+
+/* step 2: transcribe */
+.vis-transcribe { display: flex; flex-direction: column; gap: 18px; }
+.transcript {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+.transcript .ts { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-right: 8px; }
+.transcript .h { background: linear-gradient(180deg, transparent 60%, var(--lime-soft) 60%); padding: 0 2px; }
+.waveform {
+  height: 56px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 2px;
+}
+.waveform span {
+  flex: 1; background: var(--ink-2); border-radius: 1px; opacity: 0.6;
+}
+
+/* step 3: claude pick */
+.vis-pick { display: flex; flex-direction: column; gap: 14px; }
+.bubble {
+  display: flex; align-items: flex-start; gap: 12px;
+}
+.bubble-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--ink); color: var(--lime);
+  display: grid; place-items: center;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  flex-shrink: 0;
+}
+.bubble-body {
+  flex: 1;
+  padding: 14px 16px;
+  border-radius: 4px var(--radius-m) var(--radius-m) var(--radius-m);
+  background: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+.bubble-body .lead { color: var(--muted); margin-bottom: 6px; font-size: 11px; }
+.bubble-body .pick { display: block; }
+.bubble-body .pick em { background: var(--lime-soft); font-style: normal; padding: 0 4px; border-radius: 3px; }
+
+/* step 4: reframe */
+.vis-reframe {
+  position: relative;
+  aspect-ratio: 16/9;
+  background: linear-gradient(135deg, #2a2e25 0%, #11140F 100%);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+}
+.face-mock {
+  position: absolute;
+  width: 18%; height: 32%;
+  top: 32%; left: 60%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #c0a78a 0%, #8a7560 70%, #5a4a3c 100%);
+  box-shadow: inset -4px -6px 12px rgba(0,0,0,0.3);
+}
+.crop-frame {
+  position: absolute;
+  top: 8%; bottom: 8%;
+  width: calc((100% - 16%) * 9 / 16);
+  left: 50%;
+  transform: translateX(0%);
+  border: 2px solid var(--lime);
+  border-radius: 4px;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.42);
+  animation: crop-track 6s var(--ease) infinite alternate;
+}
+@keyframes crop-track {
+  0% { left: 22%; }
+  100% { left: 56%; }
+}
+.crop-frame::before, .crop-frame::after,
+.crop-frame > .corner {
+  content: ""; position: absolute; width: 12px; height: 12px;
+  border: 2px solid var(--lime); background: var(--lime);
+}
+.crop-frame::before { top: -6px; left: -6px; }
+.crop-frame::after { top: -6px; right: -6px; }
+.crop-frame .c-bl, .crop-frame .c-br {
+  position: absolute; width: 12px; height: 12px;
+  border: 2px solid var(--lime); background: var(--lime);
+}
+.crop-frame .c-bl { bottom: -6px; left: -6px; }
+.crop-frame .c-br { bottom: -6px; right: -6px; }
+.reframe-meta {
+  position: absolute; bottom: 12px; left: 14px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  background: rgba(14,17,12,0.8);
+  border: 1px solid rgba(198,255,61,0.4);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--lime);
+  letter-spacing: 0.04em;
+}
+
+/* step 5: ffmpeg terminal */
+.vis-render {
+  background: var(--ink-3);
+  border-radius: var(--radius-m);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #c8cdc1;
+  line-height: 1.65;
+  padding: 18px 20px;
+}
+.vis-render .prompt { color: var(--muted-2); }
+.vis-render .accent { color: var(--lime); }
+.vis-render .ok { color: #6fd285; }
+.vis-render .bar {
+  display: inline-block; width: 14ch; letter-spacing: -0.05em;
+}
+
+/* gallery */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+}
+@media (max-width: 980px) { .gallery { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 540px) { .gallery { grid-template-columns: 1fr; } }
+.clip-card {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--bg-3);
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.clip-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-card); }
+.clip-frame {
+  aspect-ratio: 9/16;
+  border-radius: var(--radius-m);
+  background: linear-gradient(180deg, #1a1d18 0%, #0E110C 100%);
+  position: relative;
+  overflow: hidden;
+}
+.clip-frame::after {
+  content: "▶";
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: rgba(198,255,61,0.92);
+  color: var(--ink);
+  display: grid; place-items: center;
+  font-size: 14px;
+}
+.clip-frame .pseudo-subs {
+  position: absolute; left: 12px; right: 12px; bottom: 22px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+  text-align: center;
+  color: var(--paper);
+  text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  line-height: 1.15;
+}
+.clip-frame .pseudo-subs em { font-style: normal; background: var(--lime); color: var(--ink); padding: 2px 5px; border-radius: 3px; }
+.clip-meta { display: flex; flex-direction: column; gap: 6px; }
+.clip-title { font-size: 13px; font-weight: 600; color: var(--ink); line-height: 1.35; }
+.clip-tags { display: flex; gap: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; }
+.clip-tags span { padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; }
+
+/* tech terminal */
+.tech-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr);
+  gap: 40px;
+  align-items: stretch;
+}
+@media (max-width: 980px) { .tech-grid { grid-template-columns: 1fr; } }
+.tech-list { display: flex; flex-direction: column; gap: 0; }
+.tech-list li {
+  list-style: none;
+  display: flex; align-items: baseline; gap: 14px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 13px;
+  color: var(--ink);
+}
+.tech-list li::before { content: "▸"; color: var(--lime-deep); flex-shrink: 0; }
+.tech-list li:last-child { border-bottom: none; }
+.tech-list li .name { font-weight: 600; }
+.tech-list li .what { color: var(--muted); margin-left: auto; font-size: 12px; }
+
+.terminal {
+  background: var(--ink-3);
+  border-radius: var(--radius-l);
+  padding: 0;
+  font-family: var(--font-mono); font-size: 13px;
+  color: #c8cdc1;
+  border: 1px solid rgba(255,255,255,0.05);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.terminal-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+}
+.terminal-head .dots { display: inline-flex; gap: 6px; }
+.terminal-head .dots span { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,0.12); }
+.terminal-head .title { color: var(--muted-2); font-size: 11px; letter-spacing: 0.06em; }
+.terminal-body { padding: 22px 22px 26px; line-height: 1.75; flex: 1; }
+.terminal-body .prompt { color: var(--muted-2); }
+.terminal-body .cmd { color: var(--paper); }
+.terminal-body .accent { color: var(--lime); }
+.terminal-body .ok { color: #6fd285; }
+.terminal-body .row { white-space: pre; overflow-x: auto; }
+.terminal-foot {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 22px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+  font-size: 11px; color: var(--muted-2);
+  letter-spacing: 0.04em;
+}
+.terminal-foot .copy {
+  color: var(--lime); cursor: pointer;
+  font-weight: 600; font-size: 11px;
+  background: transparent; border: 1px solid rgba(198,255,61,0.3);
+  padding: 6px 12px; border-radius: var(--radius-pill);
+  transition: background 0.18s var(--ease);
+}
+.terminal-foot .copy:hover { background: rgba(198,255,61,0.08); }
+
+/* about */
+.about {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 56px;
+  align-items: start;
+}
+@media (max-width: 980px) { .about { grid-template-columns: 1fr; gap: 36px; } }
+.pull-quote {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(28px, 3.4vw, 42px);
+  line-height: 1.18;
+  letter-spacing: -0.018em;
+  color: var(--ink);
+  margin: 0;
+}
+.pull-quote::before {
+  content: "“";
+  display: block;
+  font-size: 72px; line-height: 0.8; color: var(--lime-deep);
+  margin-bottom: 8px;
+}
+.pull-quote em { font-style: normal; background: linear-gradient(180deg, transparent 70%, var(--lime-soft) 70%); padding: 0 4px; }
+
+.bio {
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--bg-3);
+  display: flex; flex-direction: column; gap: 18px;
+}
+.bio-name { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: -0.01em; }
+.bio-role { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.bio-stack { display: flex; flex-wrap: wrap; gap: 6px; }
+.bio-stack .tag { background: var(--paper-2); }
+.bio-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.bio-links a {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-strong);
+  font-size: 13px; font-weight: 500;
+  background: var(--paper);
+  transition: background 0.18s var(--ease), transform 0.18s var(--ease);
+}
+.bio-links a:hover { background: var(--paper-2); transform: translateY(-1px); }
+.bio-links a svg { width: 14px; height: 14px; }
+
+.projects { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 32px; }
+@media (max-width: 880px) { .projects { grid-template-columns: 1fr; } }
+.project-card {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg-3);
+  display: flex; flex-direction: column; gap: 8px;
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.project-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-card); }
+.project-card .name { font-family: var(--font-display); font-weight: 600; font-size: 16px; letter-spacing: -0.01em; }
+.project-card .desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
+.project-card .role { font-family: var(--font-mono); font-size: 11px; color: var(--lime-deep); text-transform: uppercase; letter-spacing: 0.1em; }
+
+/* excella support — dark indigo split */
+.support {
+  background: var(--indigo);
+  color: var(--paper);
+  position: relative;
+  overflow: hidden;
+}
+.support::before {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 60% 50% at 100% 0%, rgba(198,255,61,0.18) 0%, rgba(198,255,61,0) 60%),
+              radial-gradient(ellipse 50% 40% at 0% 100%, rgba(155,140,255,0.18) 0%, rgba(155,140,255,0) 60%);
+  pointer-events: none;
+}
+.support .wrap { position: relative; z-index: 2; }
+.support .eyebrow { color: var(--lime); }
+.support-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.1fr);
+  gap: 64px;
+  align-items: center;
+}
+@media (max-width: 980px) { .support-grid { grid-template-columns: 1fr; gap: 48px; } }
+.support h2 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(40px, 5.4vw, 80px);
+  line-height: 0.98;
+  letter-spacing: -0.03em;
+  color: var(--paper);
+  margin: 0 0 24px;
+}
+.support h2 .slash { color: var(--lime); }
+.support-sub { font-size: clamp(16px, 1.4vw, 19px); color: rgba(251,250,245,0.65); margin: 0 0 36px; max-width: 520px; }
+.support-feats {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+  margin-bottom: 36px;
+}
+@media (max-width: 540px) { .support-feats { grid-template-columns: 1fr; } }
+.support-feats li {
+  list-style: none;
+  display: flex; align-items: flex-start; gap: 10px;
+  font-size: 14px; line-height: 1.55;
+  color: rgba(251,250,245,0.85);
+}
+.support-feats li::before {
+  content: "▸"; color: var(--lime); flex-shrink: 0; font-family: var(--font-mono); margin-top: 1px;
+}
+.support-feats li b { color: var(--paper); font-weight: 600; }
+.support-cta-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 36px; }
+.support-cta-row .btn-primary { background: var(--lime); color: var(--ink); }
+.support-cta-row .btn-secondary { background: transparent; color: var(--paper); border-color: rgba(251,250,245,0.22); }
+.support-cta-row .btn-secondary:hover { background: rgba(255,255,255,0.06); }
+.support-mini { display: flex; flex-wrap: wrap; gap: 28px; }
+.support-mini div { display: flex; flex-direction: column; gap: 4px; }
+.support-mini .num { font-family: var(--font-mono); font-weight: 600; font-size: 22px; color: var(--lime); }
+.support-mini .lab { font-size: 12px; color: rgba(251,250,245,0.5); letter-spacing: 0.04em; text-transform: uppercase; font-family: var(--font-mono); }
+
+/* mockup composition */
+.mock-stack {
+  position: relative;
+  aspect-ratio: 5/4;
+}
+.mock-admin {
+  position: absolute;
+  inset: 6% 0 8% 6%;
+  background: #0c0a26;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-m);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.45);
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: rgba(251,250,245,0.85);
+}
+.mock-admin .ad-side {
+  background: rgba(0,0,0,0.25);
+  padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 4px;
+  border-right: 1px solid rgba(255,255,255,0.05);
+}
+.mock-admin .ad-side .grp { font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em; color: rgba(251,250,245,0.4); margin: 8px 0 2px; }
+.mock-admin .ad-side .item { padding: 6px 8px; border-radius: 6px; display: flex; align-items: center; gap: 6px; }
+.mock-admin .ad-side .item.act { background: rgba(198,255,61,0.12); color: var(--lime); }
+.mock-admin .ad-side .item .b { width: 6px; height: 6px; border-radius: 50%; background: rgba(251,250,245,0.3); }
+.mock-admin .ad-side .item.act .b { background: var(--lime); }
+.mock-admin .ad-main { display: grid; grid-template-rows: auto 1fr auto; }
+.mock-admin .ad-head { padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; }
+.mock-admin .ad-head .who { font-weight: 600; }
+.mock-admin .ad-head .meta { font-family: var(--font-mono); font-size: 9px; color: rgba(251,250,245,0.4); letter-spacing: 0.1em; }
+.mock-admin .ad-thread { padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.mock-admin .ad-msg { padding: 8px 10px; border-radius: 4px 10px 10px 10px; background: rgba(255,255,255,0.06); max-width: 80%; line-height: 1.45; }
+.mock-admin .ad-msg.me { align-self: flex-end; background: rgba(198,255,61,0.18); color: var(--lime); border-radius: 10px 4px 10px 10px; }
+.mock-admin .ad-foot { padding: 10px 14px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; gap: 6px; }
+.mock-admin .ad-foot .input { flex: 1; padding: 6px 10px; border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-pill); color: rgba(251,250,245,0.5); }
+.mock-admin .ad-foot .send { padding: 4px 12px; background: var(--lime); color: var(--ink); border-radius: var(--radius-pill); font-weight: 600; }
+
+.mock-phone {
+  position: absolute;
+  right: 0; bottom: 0;
+  width: 32%; aspect-ratio: 9/19;
+  background: #1a1830;
+  border: 4px solid #0a0820;
+  border-radius: 28px;
+  box-shadow: 0 30px 60px rgba(0,0,0,0.5);
+  overflow: hidden;
+  padding: 14px 10px;
+  z-index: 2;
+}
+.mock-phone .notch {
+  position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+  width: 50px; height: 6px; border-radius: 6px; background: #0a0820;
+}
+.mock-phone .ph-thread { display: flex; flex-direction: column; gap: 6px; padding-top: 18px; font-size: 9.5px; }
+.mock-phone .ph-msg { padding: 6px 8px; border-radius: 12px 12px 12px 4px; background: rgba(255,255,255,0.06); color: rgba(251,250,245,0.85); max-width: 85%; line-height: 1.4; }
+.mock-phone .ph-msg.me { align-self: flex-end; background: var(--lime); color: var(--ink); border-radius: 12px 12px 4px 12px; }
+.mock-phone .ph-input {
+  position: absolute; bottom: 14px; left: 12px; right: 12px;
+  height: 22px;
+  border: 1px solid rgba(255,255,255,0.1); border-radius: var(--radius-pill);
+  background: rgba(0,0,0,0.2);
+}
+
+/* pricing */
+.pricing-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+}
+@media (max-width: 880px) { .pricing-grid { grid-template-columns: 1fr; } }
+.price-card {
+  padding: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--bg-3);
+  display: flex; flex-direction: column; gap: 18px;
+}
+.price-card.featured { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.price-card.featured .price-name { color: var(--paper); }
+.price-card.featured .price-tag { color: var(--lime); }
+.price-card.featured .price-cta.btn-primary { background: var(--lime); color: var(--ink); }
+.price-card.featured .price-feats li { color: rgba(251,250,245,0.82); }
+.price-card.featured .price-feats li::before { color: var(--lime); }
+.price-card.featured .price-sub { color: rgba(251,250,245,0.55); }
+.price-name { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: -0.01em; }
+.price-tag { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--lime-deep); }
+.price-sub { font-size: 14px; color: var(--muted); line-height: 1.6; }
+.price-feats { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.price-feats li { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.5; color: var(--ink-2); }
+.price-feats li::before { content: "✓"; color: var(--lime-deep); flex-shrink: 0; font-weight: 600; }
+.price-feats li.no::before { content: "—"; color: var(--muted-2); }
+.price-cta { margin-top: auto; align-self: flex-start; }
+
+/* footer */
+footer.foot {
+  background: var(--ink);
+  color: var(--paper);
+  padding: 80px 0 40px;
+  margin-top: 0;
+  border-top: 1px solid var(--ink);
+}
+.foot-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 1fr));
+  gap: 40px;
+  padding-bottom: 56px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+@media (max-width: 880px) { .foot-top { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 540px) { .foot-top { grid-template-columns: 1fr; } }
+.foot-brand { display: flex; flex-direction: column; gap: 18px; }
+.foot-brand .crest {
+  font-family: var(--font-display); font-weight: 800;
+  font-size: 28px; letter-spacing: -0.02em;
+  color: var(--paper);
+}
+.foot-brand .crest .acc { color: var(--lime); }
+.foot-brand p { font-size: 13px; line-height: 1.6; color: rgba(251,250,245,0.5); margin: 0; max-width: 320px; }
+.foot-col h4 {
+  font-family: var(--font-mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.14em; color: rgba(251,250,245,0.4);
+  margin: 0 0 14px;
+  font-weight: 500;
+}
+.foot-col ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.foot-col a { font-size: 14px; color: rgba(251,250,245,0.78); transition: color 0.18s var(--ease); }
+.foot-col a:hover { color: var(--lime); }
+
+.foot-bot {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-top: 28px;
+  font-family: var(--font-mono); font-size: 12px; color: rgba(251,250,245,0.4);
+  letter-spacing: 0.04em;
+  flex-wrap: wrap; gap: 16px;
+}
+.foot-soc { display: flex; gap: 8px; }
+.foot-soc a {
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border-radius: 50%; border: 1px solid rgba(255,255,255,0.1);
+  color: rgba(251,250,245,0.7);
+  transition: background 0.18s var(--ease), border-color 0.18s var(--ease), color 0.18s var(--ease);
+}
+.foot-soc a:hover { background: rgba(255,255,255,0.06); border-color: var(--lime); color: var(--lime); }
+.foot-soc svg { width: 16px; height: 16px; }
+
+/* observer reveal */
+.reveal { opacity: 0; transform: translateY(14px); transition: opacity 0.6s var(--ease), transform 0.6s var(--ease); }
+.reveal.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1; transform: none; }
+  .crop-frame { animation: none; left: 38%; }
+}
+
+/* mobile tweaks */
+@media (max-width: 540px) {
+  .wrap { padding: 0 18px; }
+  .nav-inner { padding: 0 18px; }
+  h1.hero-title { font-size: clamp(40px, 11vw, 56px); }
+  .section { padding-block: 80px; }
+}
+</style>
+</head>
+<body>
+
+<nav class="nav" aria-label="Главная навигация">
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="shorts-cutter">
+      <span class="brand-mark">✦</span>
+      shorts-cutter
+    </a>
+    <div class="nav-links">
+      <a href="#pipeline">Пайплайн</a>
+      <a href="#result">Результат</a>
+      <a href="#stack">Стек</a>
+      <a href="#about">О себе</a>
+      <a href="#support">Excella Support</a>
+    </div>
+    <a class="nav-cta" href="https://github.com/vediota-coder/shorts-cutter" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.74 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.23-1.27-5.23-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.45.11-3.03 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.74.11 3.03.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.36-5.25 5.65.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
+      GitHub
+      <span class="star" id="nav-stars">★ —</span>
+    </a>
+  </div>
+</nav>
+
+<a id="top"></a>
+<section class="hero">
+  <div class="hero-bg"></div>
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <div class="hero-eyebrow eyebrow">open-source · MIT · v0.1.0-dev · локально на M-чипе</div>
+        <h1 class="hero-title">
+          Длинное видео<br>
+          в&nbsp;<span class="h-mark">шортсы<svg viewBox="0 0 200 32" preserveAspectRatio="none" aria-hidden="true"><path d="M2 22 C 30 14, 80 12, 130 18 S 198 26, 198 22 L 196 28 L 60 30 L 4 28 Z" fill="#C6FF3D"/></svg></span>.
+        </h1>
+        <p class="hero-sub">Локальный пайплайн на Whisper, Mediapipe и ffmpeg. Claude API находит лучшие моменты, face tracking держит спикера в кадре, субтитры подтягиваются автоматически. Всё на твоей машине, кроме шага «выбор моментов» — там <span class="mono">$0.01–0.05</span> за час видео через Haiku 4.5.</p>
+        <div class="hero-cta-row">
+          <a class="hero-gh" href="https://github.com/vediota-coder/shorts-cutter" target="_blank" rel="noopener">
+            <span class="hero-gh-l">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.74 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.23-1.27-5.23-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.45.11-3.03 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.74.11 3.03.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.36-5.25 5.65.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
+              vediota-coder/shorts-cutter
+            </span>
+            <span class="hero-gh-r">
+              <span class="star">★</span>
+              <span id="hero-stars" class="tabular">—</span>
+            </span>
+          </a>
+          <a class="btn btn-secondary" href="#pipeline">Как работает</a>
+          <a class="btn btn-ghost" href="https://excella.ru" target="_blank" rel="noopener">Excella.ru <span class="arr">↗</span></a>
+        </div>
+        <div class="hero-meta">
+          <span>MIT-лицензия</span>
+          <span>Apple Silicon</span>
+          <span>Docker compose</span>
+          <span>Python 3.11+</span>
+        </div>
+      </div>
+      <div>
+        <div class="monitor">
+          <div class="monitor-screen"><img src="assets/screen-overview.png" alt="Главный экран shorts-cutter — paste URL, выбор стиля субтитров, список заданий"></div>
+          <div class="monitor-bezel"><span></span><span></span><span></span></div>
+          <div class="float-chip">
+            <span class="dot"></span>
+            <span><span class="tabular">1h video</span> → 8 шортсов · <span class="tabular">4m 12s</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="poweredby">
+  <div class="poweredby-inner">
+    <div class="poweredby-label">Под капотом</div>
+    <div class="poweredby-list">
+      <span>yt-dlp</span>
+      <span>faster-whisper</span>
+      <span>Mediapipe</span>
+      <span>ffmpeg</span>
+      <span>Claude API</span>
+      <span>FastAPI</span>
+    </div>
+  </div>
+</div>
+
+<section class="section">
+  <div class="wrap">
+    <div class="sect-head reveal">
+      <div class="eyebrow">Метрики</div>
+      <h2>Продукт, а не эксперимент.</h2>
+      <p>Реальные показатели на M-чипе с часовым YouTube-роликом и стилем субтитров «Karaoke».</p>
+    </div>
+    <div class="numbers reveal">
+      <div class="num-cell">
+        <div class="num-value">10<span class="accent">×</span></div>
+        <div class="num-label">Из часа видео получаются 5–10 готовых шортсов за минуты, а не за день монтажа.</div>
+      </div>
+      <div class="num-cell">
+        <div class="num-value">$<span class="accent">0.03</span></div>
+        <div class="num-label">Средняя стоимость обработки часа видео — только шаг «pick» через Claude Haiku.</div>
+      </div>
+      <div class="num-cell">
+        <div class="num-value">9:16</div>
+        <div class="num-label">Авто-рефрейм с face-tracking 30fps, плавное смещение crop-окна за спикером.</div>
+      </div>
+      <div class="num-cell">
+        <div class="num-value">100<span class="accent">%</span></div>
+        <div class="num-label">Локально, кроме одного API-шага. Видео не уходит в облако, ключи и хост — твои.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<a id="pipeline"></a>
+<section class="section">
+  <div class="wrap">
+    <div class="sect-head reveal">
+      <div class="eyebrow">Пайплайн · 5 шагов</div>
+      <h2>Один URL — пять локальных шагов до готового шортса.</h2>
+      <p>Каждый шаг можно запустить отдельно. Стейт сохраняется между запусками — упало на render → перезапустился оттуда же.</p>
+    </div>
+
+    <div class="pipeline-row reveal">
+      <div>
+        <div class="pipe-step-num"><span>01 / 05</span> · <span>download</span></div>
+        <h3 class="pipe-row-title">Скачивание из YouTube, VK или локального файла.</h3>
+        <p class="pipe-row-desc">Тонкая обёртка над <span class="mono">yt-dlp</span> с авто-выбором максимального качества видео и аудио. Файлы попадают в <span class="mono">downloads/</span>, gitignored.</p>
+        <div class="pipe-row-tags">
+          <span class="tag">yt-dlp</span>
+          <span class="tag">YouTube</span>
+          <span class="tag">VK</span>
+          <span class="tag">file</span>
+        </div>
+      </div>
+      <div class="pipe-vis">
+        <div class="vis-paste">
+          <div class="vis-paste-input">
+            <span class="label">URL</span>
+            <span class="url">https://youtube.com/watch?v=dQw4w9WgXcQ</span>
+          </div>
+          <div class="vis-progress"></div>
+          <div class="vis-progress-meta">
+            <span>downloading · video.mp4</span>
+            <span>112 / 154 MB · 6.4 MB/s</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline-row reveal">
+      <div>
+        <div class="pipe-step-num"><span>02 / 05</span> · <span>transcribe</span></div>
+        <h3 class="pipe-row-title">Транскрипт с таймкодами — локально.</h3>
+        <p class="pipe-row-desc"><span class="mono">faster-whisper</span> на Apple Silicon (Metal). Никакой облачной транскрипции — твои данные не уходят с машины.</p>
+        <div class="pipe-row-tags">
+          <span class="tag">faster-whisper</span>
+          <span class="tag">Metal</span>
+          <span class="tag">word-level</span>
+        </div>
+      </div>
+      <div class="pipe-vis">
+        <div class="vis-transcribe">
+          <div class="transcript">
+            <span class="ts">00:02:15</span>Главный закон переговоров — <span class="h">миром правит спрос</span>, а не предложение.<br>
+            <span class="ts">00:02:48</span>Когда спрос растёт, продавец диктует условия. Когда падает — рынок берёт верх.<br>
+            <span class="ts">00:03:22</span>Поэтому сначала <span class="h">создаём дефицит</span>, потом обсуждаем цену.
+          </div>
+          <div class="waveform" id="wave"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline-row reveal">
+      <div>
+        <div class="pipe-step-num"><span>03 / 05</span> · <span>pick</span></div>
+        <h3 class="pipe-row-title">Claude выбирает 5–10 моментов 30–60 сек.</h3>
+        <p class="pipe-row-desc">Промпт задаёт критерии: завершённая мысль, цифры, история. Можно перебить инструкцией под конкретное видео. Единственный API-шаг.</p>
+        <div class="pipe-row-tags">
+          <span class="tag">Claude Haiku 4.5</span>
+          <span class="tag">~$0.03/час</span>
+          <span class="tag">prompt cache</span>
+        </div>
+      </div>
+      <div class="pipe-vis">
+        <div class="vis-pick">
+          <div class="bubble">
+            <div class="bubble-avatar">CL</div>
+            <div class="bubble-body">
+              <div class="lead">Claude · Haiku 4.5 · 8 моментов · $0.027</div>
+              <div class="pick">▸ <em>02:15 — 02:48</em> &nbsp;«главный закон переговоров»</div>
+              <div class="pick">▸ <em>11:04 — 11:42</em> &nbsp;«история про Стэнфорд и эту цифру 23%»</div>
+              <div class="pick">▸ <em>18:20 — 18:55</em> &nbsp;«6% открываемости vs 43% — что не так»</div>
+              <div class="pick">▸ <em>24:08 — 24:51</em> &nbsp;«через проводника к ЛПР, всегда x10»</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline-row reveal">
+      <div>
+        <div class="pipe-step-num"><span>04 / 05</span> · <span>reframe</span></div>
+        <h3 class="pipe-row-title">Face tracking держит спикера в кадре.</h3>
+        <p class="pipe-row-desc">Mediapipe детектит лица покадрово. Сглаженный crop 9:16 идёт за спикером — никаких рывков, нет переснятия.</p>
+        <div class="pipe-row-tags">
+          <span class="tag">Mediapipe</span>
+          <span class="tag">9:16 · 30fps</span>
+          <span class="tag">smooth-track</span>
+        </div>
+      </div>
+      <div class="pipe-vis">
+        <div class="vis-reframe">
+          <div class="face-mock"></div>
+          <div class="crop-frame"><span class="c-bl"></span><span class="c-br"></span></div>
+          <div class="reframe-meta">crop · 1080×1920 · 30fps</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline-row reveal">
+      <div>
+        <div class="pipe-step-num"><span>05 / 05</span> · <span>render</span></div>
+        <h3 class="pipe-row-title">ffmpeg cut + crop + субтитры.</h3>
+        <p class="pipe-row-desc">Пять стилей субтитров (Karaoke, Фразы, Block, News, Telegram, Big white). Бренд-обвязка из <span class="mono">branding/excella.json</span> — водяной знак, оверлей, нижний строгий strip и CTA-плашка.</p>
+        <div class="pipe-row-tags">
+          <span class="tag">ffmpeg</span>
+          <span class="tag">subtitles</span>
+          <span class="tag">brand-overlay</span>
+          <span class="tag">CTA</span>
+        </div>
+      </div>
+      <div class="pipe-vis">
+        <div class="vis-render">
+<span class="prompt">$</span> <span class="accent">python -m src.pipeline</span> --url "<span class="prompt">…</span>"<br>
+<span class="prompt">[12:01]</span> download    <span class="ok">✓</span>  154 MB · 18s<br>
+<span class="prompt">[12:01]</span> transcribe  <span class="ok">✓</span>  faster-whisper · 23s<br>
+<span class="prompt">[12:01]</span> pick        <span class="ok">✓</span>  Claude Haiku · 8 clips · <span class="accent">$0.03</span><br>
+<span class="prompt">[12:02]</span> reframe     <span class="ok">✓</span>  mediapipe · 9:16 · 30fps<br>
+<span class="prompt">[12:04]</span> render      <span class="ok">●</span>  <span class="accent bar">[######····]</span> 6 / 8<br>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<a id="result"></a>
+<section class="section" style="padding-bottom: clamp(56px, 7vw, 96px);">
+  <div class="wrap">
+    <div class="sect-head reveal">
+      <div class="eyebrow">Результат</div>
+      <h2>Готовая галерея 9:16 — со скачиванием, тегами, авто-публикацией.</h2>
+      <p>Каждый шортс лежит в карточке: вертикальный плеер, транскрипт, теги SEO, кнопки «Скачать», «Excella», «Sharpr» и «Опубликовать». Реальный воркфлоу, не демо.</p>
+    </div>
+    <div class="gallery reveal">
+      <div class="clip-card">
+        <div class="clip-frame"><div class="pseudo-subs">Главный <em>закон</em> переговоров</div></div>
+        <div class="clip-meta">
+          <div class="clip-title">Главный закон переговоров — миром правит спрос</div>
+          <div class="clip-tags"><span>00:33</span><span>karaoke</span></div>
+        </div>
+      </div>
+      <div class="clip-card">
+        <div class="clip-frame"><div class="pseudo-subs">x10 к <em>сделке</em></div></div>
+        <div class="clip-meta">
+          <div class="clip-title">X10 к сделке: у 25% контактов уже есть нужный ЛПР</div>
+          <div class="clip-tags"><span>00:42</span><span>фразы</span></div>
+        </div>
+      </div>
+      <div class="clip-card">
+        <div class="clip-frame"><div class="pseudo-subs">6% vs <em>43%</em></div></div>
+        <div class="clip-meta">
+          <div class="clip-title">6% открываемости vs 43%: что не так с твоими письмами</div>
+          <div class="clip-tags"><span>00:38</span><span>block</span></div>
+        </div>
+      </div>
+      <div class="clip-card">
+        <div class="clip-frame"><div class="pseudo-subs">$1k → <em>$45k</em></div></div>
+        <div class="clip-meta">
+          <div class="clip-title">Как превратить $1000 в $45 000 через email</div>
+          <div class="clip-tags"><span>00:45</span><span>news</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top: 56px;" class="reveal">
+      <div class="monitor" style="max-width: none;">
+        <div class="monitor-screen" style="aspect-ratio: 1440 / 760;"><img src="assets/screen-job-clips.png" alt="Реальная страница задания: 7 готовых вертикальных клипов с транскриптами и кнопками публикации"></div>
+        <div class="monitor-bezel"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<a id="stack"></a>
+<section class="section">
+  <div class="wrap">
+    <div class="sect-head reveal">
+      <div class="eyebrow">Стек · CLI</div>
+      <h2>Стандартный Python-стек. Никакой магии.</h2>
+      <p>Поднимается одной командой. Если умеешь читать <span class="mono">requirements.txt</span> — справишься.</p>
+    </div>
+    <div class="tech-grid reveal">
+      <ul class="tech-list">
+        <li><span class="name">Python 3.11+</span><span class="what">оркестрация</span></li>
+        <li><span class="name">faster-whisper</span><span class="what">транскрипция</span></li>
+        <li><span class="name">Mediapipe</span><span class="what">face tracking</span></li>
+        <li><span class="name">ffmpeg</span><span class="what">cut · crop · subs</span></li>
+        <li><span class="name">Anthropic SDK</span><span class="what">шаг pick</span></li>
+        <li><span class="name">FastAPI · uvicorn</span><span class="what">веб-интерфейс</span></li>
+        <li><span class="name">yt-dlp</span><span class="what">источник</span></li>
+        <li><span class="name">Docker compose</span><span class="what">deploy</span></li>
+      </ul>
+
+      <div class="terminal">
+        <div class="terminal-head">
+          <span class="dots"><span></span><span></span><span></span></span>
+          <span class="title">~/shorts-cutter · zsh</span>
+        </div>
+        <div class="terminal-body">
+<div class="row"><span class="prompt">$</span> <span class="cmd">pip install -r requirements.txt</span></div>
+<div class="row"><span class="prompt">$</span> <span class="cmd">brew install ffmpeg</span></div>
+<div class="row"><span class="prompt">$</span> <span class="cmd">python -m src.pipeline --url <span class="accent">"https://youtube.com/…"</span></span></div>
+<div class="row">&nbsp;</div>
+<div class="row"><span class="prompt">[12:01]</span> download    <span class="ok">✓</span>  154 MB · 18s</div>
+<div class="row"><span class="prompt">[12:01]</span> transcribe  <span class="ok">✓</span>  faster-whisper · 23s</div>
+<div class="row"><span class="prompt">[12:01]</span> pick        <span class="ok">✓</span>  Claude Haiku · 8 clips · <span class="accent">$0.03</span></div>
+<div class="row"><span class="prompt">[12:02]</span> reframe     <span class="ok">✓</span>  mediapipe · 9:16 · 30fps</div>
+<div class="row"><span class="prompt">[12:04]</span> render      <span class="ok">✓</span>  ffmpeg · 8 files · 1080p</div>
+<div class="row">&nbsp;</div>
+<div class="row"><span class="prompt">$</span> <span class="cmd">uvicorn web.app:app --reload --port 8000</span></div>
+<div class="row"><span class="ok">INFO</span>     Started server at <span class="accent">http://127.0.0.1:8000</span></div>
+        </div>
+        <div class="terminal-foot">
+          <span>copy & paste</span>
+          <button class="copy" id="copy-cli">Скопировать команду</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<a id="about"></a>
+<section class="section">
+  <div class="wrap">
+    <div class="sect-head reveal" style="margin-bottom: 36px;">
+      <div class="eyebrow">Кто за этим стоит</div>
+    </div>
+    <div class="about reveal">
+      <blockquote class="pull-quote">
+        Берусь за то, где <em>ML встречается с UX</em>. От research до prod — один человек: модель, бэкенд, интерфейс, инфраструктура.
+      </blockquote>
+      <div class="bio">
+        <div>
+          <div class="bio-name">Vediota</div>
+          <div class="bio-role">Founder · Excella · AI / Full-stack</div>
+        </div>
+        <div class="bio-stack">
+          <span class="tag">Python</span>
+          <span class="tag">TypeScript</span>
+          <span class="tag">React</span>
+          <span class="tag">Claude · OpenAI · MLX</span>
+          <span class="tag">FastAPI · Fastify</span>
+          <span class="tag">PostgreSQL</span>
+          <span class="tag">Docker · nginx</span>
+        </div>
+        <div class="bio-links">
+          <a href="https://github.com/vediota-coder" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.74 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.23-1.27-5.23-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.45.11-3.03 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.74.11 3.03.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.36-5.25 5.65.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
+            vediota-coder
+          </a>
+          <a href="mailto:vediota.m@gmail.com">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6.5l9 6 9-6M3 6h18v12H3z"/></svg>
+            vediota.m@gmail.com
+          </a>
+          <a href="https://excella.ru" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14L21 3M21 3h-7M21 3v7"/><path d="M21 14v6a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1h6"/></svg>
+            excella.ru
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="projects reveal">
+      <a href="https://github.com/vediota-coder/shorts-cutter" target="_blank" rel="noopener" class="project-card">
+        <div class="role">этот проект</div>
+        <div class="name">shorts-cutter</div>
+        <div class="desc">Локальная нарезка длинных видео в вертикальные шортсы с face tracking и автосубтитрами.</div>
+      </a>
+      <a href="https://excella.ru" target="_blank" rel="noopener" class="project-card">
+        <div class="role">основной</div>
+        <div class="name">Excella Support</div>
+        <div class="desc">Омниканальный чат-центр: виджет на сайт + админка операторов + бэкенд. TG, WA, VK, Email.</div>
+      </a>
+      <a href="https://excella.ru" target="_blank" rel="noopener" class="project-card">
+        <div class="role">research</div>
+        <div class="name">hh-mcp · промразведка</div>
+        <div class="desc">MCP-сервер: поиск вакансий и B2B deep-search через AI-оркестратор и API ФНС/Контур.</div>
+      </a>
+    </div>
+  </div>
+</section>
+
+<a id="support"></a>
+<section class="section support">
+  <div class="wrap">
+    <div class="support-grid">
+      <div>
+        <div class="eyebrow">Основной продукт</div>
+        <h2>Excella<span class="slash"> /</span><br>Support</h2>
+        <p class="support-sub">Виджет на сайт, админка для операторов и мультиканальный inbox в одной системе. Telegram, WhatsApp, VK, Email — все диалоги в одном месте, без пересылок и Excel.</p>
+        <ul class="support-feats">
+          <li><b>Виджет одной строкой.</b><br>React IIFE-бандл, встраивается тегом <span class="mono">&lt;script&gt;</span> на любой сайт.</li>
+          <li><b>Админка с шорткатами.</b><br>⌘K command palette, теги, операторские шаблоны, SLA-метки.</li>
+          <li><b>Один inbox на 4+ канала.</b><br>TG · WA · VK · Email с возможностью добавить свой адаптер.</li>
+          <li><b>Self-host или managed.</b><br>Docker compose у тебя, или развёрнутый SaaS на нашем хосте.</li>
+        </ul>
+        <div class="support-cta-row">
+          <a class="btn btn-primary" href="https://excella.ru" target="_blank" rel="noopener">Заказать демо <span class="arr">→</span></a>
+          <a class="btn btn-secondary" href="https://excella.ru" target="_blank" rel="noopener">Подробнее <span class="arr">↗</span></a>
+        </div>
+        <div class="support-mini">
+          <div><div class="num">< 30s</div><div class="lab">первого ответа</div></div>
+          <div><div class="num">4 канала</div><div class="lab">в одном инбоксе</div></div>
+          <div><div class="num">Self-host</div><div class="lab">или SaaS</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="mock-stack">
+          <div class="mock-admin">
+            <div class="ad-side">
+              <div class="grp">Каналы</div>
+              <div class="item act"><span class="b"></span>Telegram · 12</div>
+              <div class="item"><span class="b"></span>WhatsApp · 4</div>
+              <div class="item"><span class="b"></span>VK · 2</div>
+              <div class="item"><span class="b"></span>Email · 7</div>
+              <div class="grp">Команда</div>
+              <div class="item"><span class="b"></span>Анна</div>
+              <div class="item"><span class="b"></span>Дмитрий</div>
+            </div>
+            <div class="ad-main">
+              <div class="ad-head">
+                <div class="who">Дмитрий М. · TG</div>
+                <div class="meta">SLA · 4m left</div>
+              </div>
+              <div class="ad-thread">
+                <div class="ad-msg">Здравствуйте! У меня вопрос по доставке заказа №48211</div>
+                <div class="ad-msg">Не пришёл трек-номер за 2 дня</div>
+                <div class="ad-msg me">Минуту, проверяю в системе…</div>
+                <div class="ad-msg me">Заказ передан в курьерку, трек:<br>RU48211045</div>
+                <div class="ad-msg">Спасибо!</div>
+              </div>
+              <div class="ad-foot">
+                <div class="input">Ответить…</div>
+                <div class="send">Send</div>
+              </div>
+            </div>
+          </div>
+          <div class="mock-phone">
+            <div class="notch"></div>
+            <div class="ph-thread">
+              <div class="ph-msg">Привет!</div>
+              <div class="ph-msg me">Здравствуйте! Чем помочь?</div>
+              <div class="ph-msg">Где мой заказ?</div>
+              <div class="ph-msg me">Минуту, проверяю…</div>
+            </div>
+            <div class="ph-input"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="sect-head reveal" style="text-align: center; margin: 0 auto 56px; align-items: center;">
+      <div class="eyebrow">Self-host или с поддержкой</div>
+      <h2 style="text-align: center;">Один и тот же стек.<br>Два сценария использования.</h2>
+    </div>
+    <div class="pricing-grid reveal">
+      <div class="price-card">
+        <div class="price-tag">open-source · MIT</div>
+        <div class="price-name">Self-host</div>
+        <div class="price-sub">Клонируешь репо, ставишь Python и ffmpeg, запускаешь pipeline. Все ключи и хост — твои.</div>
+        <ul class="price-feats">
+          <li>Полный доступ к коду и докам</li>
+          <li>Локальная обработка на M-чипе</li>
+          <li>Свой Anthropic-ключ для шага pick</li>
+          <li>Бренд-обвязка в JSON</li>
+          <li class="no">Поддержка по SLA</li>
+          <li class="no">Кастомная интеграция и обучение</li>
+        </ul>
+        <a class="btn btn-secondary price-cta" href="https://github.com/vediota-coder/shorts-cutter" target="_blank" rel="noopener">Поставить с GitHub <span class="arr">→</span></a>
+      </div>
+      <div class="price-card featured">
+        <div class="price-tag">с командой</div>
+        <div class="price-name">Excella Support</div>
+        <div class="price-sub">Всё то же самое, плюс кастомизация бренда, обучение операторов, интеграция с твоими каналами и поддержка от команды.</div>
+        <ul class="price-feats">
+          <li>SLA на ответ и доставку фич</li>
+          <li>Брендовая обвязка под твой стиль</li>
+          <li>Интеграция с TG / WA / VK / Email</li>
+          <li>Обучение операторов 1-на-1</li>
+          <li>Дашборды и метрики</li>
+          <li>Совместный roadmap</li>
+        </ul>
+        <a class="btn btn-primary price-cta" href="https://excella.ru" target="_blank" rel="noopener">Заказать демо <span class="arr">→</span></a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-top">
+      <div class="foot-brand">
+        <div class="crest">✦ EXCELLA<span class="acc">.</span></div>
+        <p>Делаем продукты на стыке ML и UX. Локально, с уважением к данным, по-русски.</p>
+      </div>
+      <div class="foot-col">
+        <h4>shorts-cutter</h4>
+        <ul>
+          <li><a href="https://github.com/vediota-coder/shorts-cutter" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="#pipeline">Пайплайн</a></li>
+          <li><a href="#stack">Стек</a></li>
+          <li><a href="https://github.com/vediota-coder/shorts-cutter/blob/main/README.md" target="_blank" rel="noopener">README</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Excella</h4>
+        <ul>
+          <li><a href="https://excella.ru" target="_blank" rel="noopener">excella.ru</a></li>
+          <li><a href="#support">Excella Support</a></li>
+          <li><a href="mailto:vediota.m@gmail.com">Email</a></li>
+        </ul>
+      </div>
+      <div class="foot-col">
+        <h4>Автор</h4>
+        <ul>
+          <li><a href="https://github.com/vediota-coder" target="_blank" rel="noopener">vediota-coder</a></li>
+          <li><a href="mailto:vediota.m@gmail.com">vediota.m@gmail.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-bot">
+      <span>© 2026 Excella · v0.1.0-dev · MIT License</span>
+      <div class="foot-soc">
+        <a href="https://github.com/vediota-coder/shorts-cutter" aria-label="GitHub" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.69.08-.69 1.15.08 1.76 1.18 1.76 1.18 1.02 1.74 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.23-1.27-5.23-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.45.11-3.03 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.74.11 3.03.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.36-5.25 5.65.41.36.78 1.06.78 2.14v3.17c0 .31.21.68.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
+        </a>
+        <a href="https://excella.ru" aria-label="Excella" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14L21 3M21 3h-7M21 3v7"/><path d="M21 14v6a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1h6"/></svg>
+        </a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+// GitHub stars
+(function(){
+  fetch('https://api.github.com/repos/vediota-coder/shorts-cutter')
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(d => {
+      var n = (d && typeof d.stargazers_count === 'number') ? d.stargazers_count : null;
+      if (n === null) return;
+      var fmt = n.toLocaleString('ru-RU');
+      var hero = document.getElementById('hero-stars');
+      var nav = document.getElementById('nav-stars');
+      if (hero) hero.textContent = fmt;
+      if (nav) nav.textContent = '★ ' + fmt;
+    })
+    .catch(() => {
+      var hero = document.getElementById('hero-stars');
+      if (hero) hero.textContent = '0';
+    });
+})();
+
+// waveform
+(function(){
+  var w = document.getElementById('wave');
+  if (!w) return;
+  var bars = '';
+  var rng = function(seed){ return ((Math.sin(seed) * 10000) % 1 + 1) % 1; };
+  for (var i = 0; i < 64; i++) {
+    var h = 12 + Math.round(rng(i + 1) * 38);
+    bars += '<span style="height:' + h + 'px"></span>';
+  }
+  w.innerHTML = bars;
+})();
+
+// reveal observer
+(function(){
+  if (!('IntersectionObserver' in window)) {
+    document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('in'); });
+    return;
+  }
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting) {
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
+})();
+
+// copy cli
+(function(){
+  var btn = document.getElementById('copy-cli');
+  if (!btn) return;
+  btn.addEventListener('click', function(){
+    var cmd = 'pip install -r requirements.txt && python -m src.pipeline --url "..."';
+    navigator.clipboard && navigator.clipboard.writeText(cmd).then(function(){
+      var orig = btn.textContent;
+      btn.textContent = '✓ Скопировано';
+      setTimeout(function(){ btn.textContent = orig; }, 1400);
+    });
+  });
+})();
+</script>
+</body>
+</html>
