@@ -70,12 +70,16 @@ class FaceTrack:
     detections: list[FaceDetection] = field(default_factory=list)
     speaking_prob: dict[int, float] = field(default_factory=dict)  # frame_idx -> prob
 
-    def bbox_at(self, frame_idx: int) -> Optional[BBox]:
-        """Bbox в данном кадре или None если не детектирован."""
+    def bbox_at(self, frame_idx: int, search_window: int = 0) -> Optional[BBox]:
+        """Bbox в данном кадре (или ближайшей детекции в ±search_window) или None."""
+        best = None
+        best_d = 10 ** 9
         for d in self.detections:
-            if d.frame_idx == frame_idx:
-                return d.bbox
-        return None
+            delta = abs(d.frame_idx - frame_idx)
+            if delta <= max(search_window, 0) and delta < best_d:
+                best = d
+                best_d = delta
+        return best.bbox if best else None
 
     def first_frame(self) -> int:
         return min((d.frame_idx for d in self.detections), default=-1)

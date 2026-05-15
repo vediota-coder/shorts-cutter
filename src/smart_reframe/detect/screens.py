@@ -79,21 +79,21 @@ def _heuristic_screens(frame: np.ndarray, exclude: list[BBox]) -> list[tuple[BBo
     Это даёт «слайды/IDE/доски» когда YOLO их не нашёл.
     """
     h, w = frame.shape[:2]
-    # ⭐ ужесточаем пороги — раньше эвристика срабатывала на любом светлом фоне
-    min_area = 0.15 * h * w   # 15% (раньше 5% — на низком разрешении ловило стены)
     max_area = 0.65 * h * w
     out: list[tuple[BBox, ScreenType]] = []
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # детекция краёв — реальная доска/слайд имеет много границ (текст, рамка)
     edges = cv2.Canny(gray, 50, 150)
 
-    # светлые регионы (доска, белый слайд)
-    _, light = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)  # 220 (раньше 200) — строже
-    # тёмные регионы (IDE, видеоплеер) — тоже строже
+    # whiteboard: порог 190 + min 8% — ловит флипчарт/маркерную доску в студии
+    _, light = cv2.threshold(gray, 190, 255, cv2.THRESH_BINARY)
+    # code/IDE: тёмные регионы, более строгий min_area
     _, dark = cv2.threshold(gray, 35, 255, cv2.THRESH_BINARY_INV)
 
-    for mask, kind in ((light, "whiteboard"), (dark, "code")):
+    for mask, kind, min_area in (
+        (light, "whiteboard", 0.08 * h * w),  # 8% — флипчарт частично перекрытый
+        (dark, "code", 0.15 * h * w),          # 15% — IDE/тёмный экран крупный
+    ):
         kernel = np.ones((9, 9), np.uint8)
         closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

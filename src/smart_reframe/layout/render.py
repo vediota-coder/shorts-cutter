@@ -22,6 +22,7 @@ from ..types import (
     ScreenRegion,
     VideoMeta,
 )
+from .smooth_track import SmoothedTrack, get_or_build_smoother
 
 
 # ─────────────────────────── вспомогательное ───────────────────────────
@@ -57,6 +58,12 @@ def _screen_at(screens: list[ScreenRegion], frame_idx: int, fps: float, win_sec:
     win = int(win_sec * fps)
     candidates = [s for s in screens if abs(s.frame_idx - frame_idx) <= win]
     if not candidates:
+        # fallback: последняя whiteboard-детекция до текущего кадра
+        # (человек повернулся к доске — она никуда не ушла, просто тело перекрыло)
+        # только whiteboard, не code/intro-анимация которая даёт ложные bbox'ы
+        past_wb = [s for s in screens if s.frame_idx < frame_idx and s.type == "whiteboard"]
+        if past_wb:
+            return max(past_wb, key=lambda s: s.frame_idx)
         return None
     return max(candidates, key=lambda s: s.bbox.area)
 
@@ -107,15 +114,15 @@ class DampedFollower:
 
     def __init__(
         self,
-        target_alpha: float = 0.18,     # вход EMA — после median'а (0.30 → 0.18: спокойнее реакция)
-        alpha: float = 0.12,            # ускорение камеры (0.14 → 0.12)
-        damping: float = 0.78,          # инерция — для плавных движений (0.74 → 0.78)
-        deadband_px: float = 70.0,      # «комфортная зона» — нечувствительно к покачиванию (50 → 70)
-        max_velocity_px: float = 22.0,  # верхняя планка скорости (24 → 22)
-        catch_up_threshold: float = 250.0,  # ⭐ 600 → 250: при резких сменах ракурса/cut снапаем мгновенно
-        median_window: int = 15,        # ⭐ 15 ≈ 0.5с@30fps (было 9 = 0.3с) — гасит колебания спикера
-        h_alpha: float = 0.06,          # ⭐ EMA на crop_h — медленный, чтобы зум не пилил
-        h_change_threshold_ratio: float = 0.04,  # ⭐ deadband по высоте: <4% изменения игнорим
+        target_alpha: float = 0.14,     # 0.18 → 0.14: медленнее реагирует на шум детектора
+        alpha: float = 0.09,            # 0.12 → 0.09: плавнее ускорение
+        damping: float = 0.86,          # 0.78 → 0.86: больше демпфирования, меньше перелётов
+        deadband_px: float = 90.0,      # 70 → 90: шире «зона покоя» — не реагируем на микро-движения
+        max_velocity_px: float = 16.0,  # 22 → 16: медленнее максимум → меньше рывков
+        catch_up_threshold: float = 200.0,  # 250 → 200: снапаем при меньшем расстоянии
+        median_window: int = 15,
+        h_alpha: float = 0.06,
+        h_change_threshold_ratio: float = 0.04,
     ):
         self.target_alpha = target_alpha
         self.alpha = alpha
@@ -139,20 +146,25 @@ class DampedFollower:
         self.ch: Optional[float] = None      # сглаженная высота
         self._buf_h: list[float] = []
 
-    def stitch_from(self, other: "DampedFollower") -> None:
-        """Перенять state соседнего follower'а — anti-jump при смене track_id.
+    def stitch_from(self, other: "DampedFollower",
+                    seed_x: float | None = None, seed_y: float | None = None) -> None:
+        """Перенять state соседнего follower'а при смене track_id.
 
-        Копируем cx/cy/vx/vy/ch и буферы медианы, чтобы новая «камера» продолжила
-        ровно с того места, где была старая, без скачка (включая высоту кропа).
+        cx/cy/vx/vy — стартуем с позиции старого трека (без скачка камеры).
+        _buf_x/_buf_y — ЗАПОЛНЯЕМ НОВОЙ позицией (seed), а не копируем старую:
+        если старый буфер содержит значения прежнего лица, медиана будет «тянуть»
+        камеру назад → видимые осцилляции первые ~15 кадров. Seed = bbox нового лица.
         """
         if other.cx is None:
             return
         self.cx, self.cy = other.cx, other.cy
         self.tx, self.ty = other.tx, other.ty
-        self.vx, self.vy = other.vx * 0.5, other.vy * 0.5  # часть скорости теряем
-        self._buf_x = list(other._buf_x)[-self._win:]
-        self._buf_y = list(other._buf_y)[-self._win:]
-        # ⭐ переносим и сглаженную высоту, чтобы зум не дёргался при смене трека
+        self.vx, self.vy = other.vx * 0.3, other.vy * 0.3  # гасим скорость сильнее
+        # заполняем буфер seed-позицией нового лица — медиана сразу указывает на цель
+        sx = seed_x if seed_x is not None else other.cx
+        sy = seed_y if seed_y is not None else other.cy
+        self._buf_x = [sx] * self._win
+        self._buf_y = [sy] * self._win
         self.ch = other.ch
         self._buf_h = list(other._buf_h)[-self._win:]
 
@@ -285,6 +297,17 @@ class RenderCtx:
     # последней детекцией face track'а и текущим кадром был cut → старая позиция
     # лица невалидна (новый ракурс), переключаемся на person_close.
     cuts_set: set = None
+    # ⭐ offline trajectory smoothers — заменяют DampedFollower для face/person
+    # cropping. Gaussian filter по всей траектории трека даёт cinema-camera
+    # плавность: per-frame jitter полностью убран, лаг отсутствует
+    # (значение каждого кадра предвычислено).
+    face_smoothers: dict[int, SmoothedTrack] = None   # face track_id → smoother
+    person_smoothers: dict[int, SmoothedTrack] = None # person track_id → smoother
+    # ⭐ camera plan: pre-computed (cx, cy, crop_h) per frame после Gaussian
+    # сглаживания через границы сегментов. Layout transitions
+    # (speaker_close ↔ screen_full ↔ person_close) превращаются в плавный
+    # zoom/pan вместо hard cut'ов.
+    camera_plan: object = None  # CamPlan | None
 
 
 def get_or_create_follower(
@@ -296,7 +319,7 @@ def get_or_create_follower(
     *,
     deadband_px: float | None = None,
     max_velocity_px: float | None = None,
-    stitch_window_frames: int = 30,   # ⭐ 15 → 30 (1с@30fps): больше шансов подцепить соседа
+    stitch_window_frames: int = 90,   # ⭐ 30 → 90 (3с@30fps): покрывает gap'ы между треками до 1.5с
     stitch_radius_px: float = 350.0,  # ⭐ 200 → 350: face_cy и person_cy могут быть на 200+ px разнесены
 ) -> "DampedFollower":
     """Возвращает follower'а для track_id. Если новый — пытается перенять
@@ -327,7 +350,7 @@ def get_or_create_follower(
                 best_dist = d
                 best_tid = prev_tid
         if best_tid is not None and best_tid in ctx.face_followers:
-            f.stitch_from(ctx.face_followers[best_tid])
+            f.stitch_from(ctx.face_followers[best_tid], seed_x=seed_x, seed_y=seed_y)
         ctx.face_followers[track_id] = f
 
     ctx.follower_last_seen[track_id] = frame_idx
@@ -339,55 +362,56 @@ def get_or_create_follower(
 
 def _render_face_crop(frame: np.ndarray, track: FaceTrack, frame_idx: int, ctx: RenderCtx,
                      padding_ratio: float = 1.6) -> np.ndarray:
-    """Закадровка по лицу с padding'ом, headroom rule (лицо в верхней трети)
-    и safe margin от краёв исходного кадра.
+    """Закадровка по лицу. Использует offline-smoothed траекторию (Gaussian sigma=20f).
 
-    crop_h сглажен через follower.smooth_h() — иначе zoom пилит на per-frame
-    шуме MediaPipe-детектора (bbox.h гуляет ±5-10% даже на неподвижной голове).
+    Никакого per-frame follower'а: значение каждого кадра предвычислено по всему треку,
+    поэтому jitter полностью отсутствует и нет лага spring-mass'а.
     """
-    raw_bbox = _bbox_at(track, frame_idx)
-    bbox = raw_bbox or BBox(
-        ctx.meta.src_w / 2 - 50, ctx.meta.src_h / 2 - 60, 100, 120,
+    if ctx.face_smoothers is None:
+        ctx.face_smoothers = {}
+    smoother = get_or_build_smoother(
+        ctx.face_smoothers, track, ctx.meta.n_frames, sigma_frames=20.0,
+        cuts_set=ctx.cuts_set,
     )
+    smoothed = smoother.at(frame_idx)
+
     import os as _os
     if _os.environ.get("SR_TRACE") == "1":
-        kind = "face" if raw_bbox else "DEFAULT"
-        print(f"[face_crop] f={frame_idx} fid={track.track_id} bbox_kind={kind} "
-              f"bbox(cx={bbox.cx:.0f},cy={bbox.cy:.0f},w={bbox.w:.0f},h={bbox.h:.0f})", flush=True)
+        kind = "smoothed" if smoothed else "OUT_OF_RANGE"
+        if smoothed:
+            scx, scy, sh = smoothed
+            print(f"[face_crop] f={frame_idx} fid={track.track_id} {kind} "
+                  f"(cx={scx:.0f},cy={scy:.0f},h={sh:.0f})", flush=True)
+        else:
+            print(f"[face_crop] f={frame_idx} fid={track.track_id} {kind}", flush=True)
 
-    follower = get_or_create_follower(
-        ctx, track.track_id, frame_idx, bbox.cx, bbox.cy,
-    )
+    if smoothed is None:
+        # фолбэк: трек не покрывает этот кадр — wide_default безопаснее snap к центру
+        return _render_wide_default(frame, SceneSegment(0, 0, "wide_default"), frame_idx, ctx)
 
-    # ⭐ хотим показать голову+плечи+грудь: ~4.5× высоты лица под 9:16,
-    # но сглаживаем target высоту через EMA, чтобы избавиться от zoom-yoyo
-    raw_target_h = bbox.h * 4.5
-    raw_target_h = max(raw_target_h, ctx.target_h // 3)  # минимальный зум
-    raw_target_h = min(raw_target_h, ctx.meta.src_h)
-    crop_h = int(round(follower.smooth_h(raw_target_h)))
-    crop_h = max(1, min(crop_h, ctx.meta.src_h))
+    face_cx, face_cy, face_h = smoothed
+
+    # ⭐ 3.5× face_h — голова+плечи; smoother уже сгладил h по всему треку, никакого EMA не надо
+    crop_h = face_h * 3.5
+    crop_h = max(crop_h, ctx.target_h // 3)
+    crop_h = min(crop_h, ctx.meta.src_h)
+    crop_h = int(round(crop_h))
     crop_w = int(round(crop_h * 9 / 16))
     crop_w = min(crop_w, ctx.meta.src_w)
 
-    # ⭐ headroom: лицо в ВЕРХНЕЙ трети кропа → центр кропа НИЖЕ лица.
-    # y растёт вниз, потому центр = bbox.cy + (crop_h * 0.18 - bbox.h * 0.5)
-    # это ставит верх лба примерно на 12% высоты кропа от верха.
-    target_cx = bbox.cx
-    target_cy = bbox.cy + crop_h * 0.18 - bbox.h * 0.5
+    # headroom: лицо в верхней трети кропа → центр кропа ниже лица
+    cx = face_cx
+    cy = face_cy + crop_h * 0.18 - face_h * 0.5
 
-    # ⭐ safe margin: если лицо у края исходника, не зажимаем кроп слишком жёстко.
-    # Гарантируем что bbox остаётся в горизонтально-центральной 80% полосе кропа.
+    # safe margin: лицо не выпадает за 80% ширину кропа при близости к краю исходника
     half_w = crop_w / 2
-    safe_x_min = bbox.cx - crop_w * 0.4
-    safe_x_max = bbox.cx + crop_w * 0.4
-    target_cx = max(safe_x_min + half_w, min(safe_x_max + half_w - crop_w, target_cx))
-    # вертикально — лицо должно быть выше центра, но не выпадать из кропа
-    half_h = crop_h / 2
-    safe_y_min = bbox.cy - crop_h * 0.35  # лицо может быть на 35% выше центра, но не выше
-    safe_y_max = bbox.cy + crop_h * 0.10  # вниз почти не сдвигаем
-    target_cy = max(safe_y_min, min(safe_y_max, target_cy))
+    safe_x_min = face_cx - crop_w * 0.4
+    safe_x_max = face_cx + crop_w * 0.4
+    cx = max(safe_x_min + half_w, min(safe_x_max + half_w - crop_w, cx))
+    safe_y_min = face_cy - crop_h * 0.35
+    safe_y_max = face_cy + crop_h * 0.10
+    cy = max(safe_y_min, min(safe_y_max, cy))
 
-    cx, cy = follower.update(target_cx, target_cy)
     if ctx.follower_last_pos is not None:
         ctx.follower_last_pos[track.track_id] = (cx, cy)
 
@@ -413,7 +437,7 @@ def _render_speaker_close(frame: np.ndarray, seg: SceneSegment, frame_idx: int, 
         and ctx.cuts_set
         and any(last_det < c <= frame_idx for c in ctx.cuts_set)
     )
-    no_recent_face = _bbox_at(track, frame_idx) is None  # search_window=6 default
+    no_recent_face = _bbox_at(track, frame_idx, search_window=30) is None  # ⭐ 6 → 30: 1с@30fps, меньше ложных person_close
     if (no_recent_face or cut_between) and ctx.face_to_person:
         pid = ctx.face_to_person.get(track.track_id)
         if pid is not None:
@@ -440,12 +464,20 @@ def _render_screen_full(frame: np.ndarray, seg: SceneSegment, frame_idx: int, ct
         return _render_wide_default(frame, seg, frame_idx, ctx)
 
     bbox = screen.bbox
-    cx, cy = ctx.screen_ema.update(bbox.cx, bbox.cy)
-    # вертикальный кроп под 9:16, охватывающий экран целиком
+    # вертикальный кроп под 9:16
     crop_h = int(min(ctx.meta.src_h, max(bbox.h * 1.05, ctx.meta.src_h * 0.95)))
     crop_w = int(round(crop_h * 9 / 16))
     crop_w = min(crop_w, ctx.meta.src_w)
 
+    # если доска уже кропа — сдвигаем центр так, чтобы правый край доски
+    # совпал с правым краем кропа, убирая тёмный фон справа
+    raw_cx = bbox.cx
+    if bbox.w < crop_w:
+        slack = (crop_w - bbox.w) / 2
+        raw_cx = bbox.cx - slack  # сдвиг влево — доска правым краем к краю кропа
+        raw_cx = max(raw_cx, crop_w / 2)  # не уходим за левый край
+
+    cx, cy = ctx.screen_ema.update(raw_cx, bbox.cy)
     crop = _crop_centered(frame, cx, cy, crop_w, crop_h)
     return _resize(crop, ctx.target_w, ctx.target_h)
 
@@ -612,70 +644,52 @@ def _render_person_close(frame: np.ndarray, seg: SceneSegment, frame_idx: int, c
     )
     if person_track is None:
         return _render_wide_default(frame, seg, frame_idx, ctx)
-    bbox = _bbox_at(person_track, frame_idx, search_window=12)
-    if bbox is None:
+
+    if ctx.person_smoothers is None:
+        ctx.person_smoothers = {}
+    # для person'ов используем чуть бóльшую sigma — body bbox шумнее face bbox
+    smoother = get_or_build_smoother(
+        ctx.person_smoothers, person_track, ctx.meta.n_frames, sigma_frames=25.0,
+        cuts_set=ctx.cuts_set,
+    )
+    smoothed = smoother.at(frame_idx)
+    if smoothed is None:
         return _render_wide_default(frame, seg, frame_idx, ctx)
 
-    follower = get_or_create_follower(
-        ctx, seg.primary_face_id, frame_idx, bbox.cx, bbox.cy,
-        deadband_px=ctx.deadband_px * 1.5,  # person_close — крупный план, можно деаднее
-    )
+    person_cx, person_cy_unused, person_h = smoothed
+    # y берём из smoothed центра bbox, h — сглажен по всему треку
+    # для person_close хотим показать торс + голову → центр кропа чуть выше центра bbox
 
-    # ⭐ при создании нового follower'а (первая person_close после cut'а) пре-заполняем
-    # _buf_h медианой bbox.h из СЛЕДУЮЩИХ 10 кадров person track'а. Это убирает
-    # zoom-out на 0.4с после cut'а: первый bbox YOLO часто транзитный и больше
-    # стабильного значения, без lookahead'а ch инициализируется на этом выбросе.
-    if follower.ch is None and not follower._buf_h:
-        person_track = next(
-            (p for p in (ctx.tracks_persons or []) if p.track_id == seg.primary_face_id),
-            None,
-        )
-        if person_track is not None:
-            future_hs = sorted(
-                d.bbox.h for d in person_track.detections
-                if frame_idx <= d.frame_idx <= frame_idx + 30
-            )[:10]
-            if len(future_hs) >= 3:
-                # медиана будущих 10 кадров — устойчива к выбросу первого кадра
-                lookahead_h = future_hs[len(future_hs) // 2]
-                lookahead_target = max(lookahead_h * 1.15, ctx.meta.src_h * 0.6)
-                lookahead_target = min(lookahead_target, ctx.meta.src_h)
-                # пре-заполняем буфер медианой → smooth_h первый вызов вернёт стабильную ch
-                for _ in range(min(5, follower._win)):
-                    follower._buf_h.append(lookahead_target)
-                follower.ch = lookahead_target
-
-    # ⭐ сглаженная высота, иначе на дрожащем YOLO-bbox персоны зум прыгает
-    raw_target_h = max(bbox.h * 1.15, ctx.meta.src_h * 0.6)
+    # crop_h: 1.15× bbox.h, но не меньше 60% высоты исходника (middle-shot)
+    raw_target_h = max(person_h * 1.15, ctx.meta.src_h * 0.6)
     raw_target_h = min(raw_target_h, ctx.meta.src_h)
-    crop_h = int(round(follower.smooth_h(raw_target_h)))
+    crop_h = int(round(raw_target_h))
     crop_h = max(1, min(crop_h, ctx.meta.src_h))
     crop_w = int(round(crop_h * 9 / 16))
     crop_w = min(crop_w, ctx.meta.src_w)
 
-    # ⭐ ИЩЕМ РЕАЛЬНОЕ ЛИЦО на этом кадре через MediaPipe с пониженным conf=0.25.
-    # YOLO body bbox.cx часто не совпадает с позицией головы (рука/плечо расширяет bbox).
-    # MediaPipe в wide-shot подкаста при conf=0.25 находит лица, которые основной
-    # пайплайн (conf=0.5) пропускает. Это ЕДИНСТВЕННЫЙ надёжный способ центрироваться
-    # на голове, а не на торсе.
-    face_pos = _detect_face_low_conf(frame, ctx, bbox)
-    if face_pos is not None:
-        cx = face_pos[0]
-        cy = face_pos[1] + bbox.h * 0.20  # cy чуть ниже лица (плечи в кадре)
-        cy_source = "mediapipe"
+    # центрируем на голове: голова обычно в верхней четверти person bbox.
+    # cy_top_quarter = person_cy_unused - person_h * 0.25 (верх плеч)
+    # но это per-frame значение шумит — используем сглаженное смещение через bbox в кадре, если есть.
+    raw_bbox = _bbox_at(person_track, frame_idx, search_window=12)
+    if raw_bbox is not None:
+        face_pos = _detect_face_low_conf(frame, ctx, raw_bbox)
     else:
-        cx = bbox.cx
-        cy = bbox.y + bbox.h * 0.45
-        cy_source = "bbox"
+        face_pos = None
+    if face_pos is not None:
+        # MediaPipe нашёл лицо → центрируемся на нём, x от smoothed (без шума)
+        cy = face_pos[1] + person_h * 0.20
+    else:
+        # без MediaPipe: используем smoothed центр и подымаем камеру так,
+        # чтобы голова была в верхней трети кропа
+        cy = person_cy_unused - person_h * 0.15
 
-    target_cx_pre = cx
-    cx, cy = follower.update(cx, cy)
+    cx = person_cx
+
     import os as _os
     if _os.environ.get("SR_TRACE") == "1":
         print(f"[person_close] f={frame_idx} pid={seg.primary_face_id} "
-              f"src={cy_source} bbox.h={bbox.h:.0f} raw_target_h={raw_target_h:.0f} "
-              f"smooth_h={crop_h} ch={follower.ch} bbox.cx={bbox.cx:.0f} "
-              f"target_cx={target_cx_pre:.0f} follower_cx={cx:.0f} crop_w={crop_w}", flush=True)
+              f"smoothed cx={cx:.0f} cy={cy:.0f} h={person_h:.0f} crop_h={crop_h}", flush=True)
     if ctx.follower_last_pos is not None:
         ctx.follower_last_pos[seg.primary_face_id] = (cx, cy)
 
@@ -693,6 +707,320 @@ _LAYOUT_RENDERERS: dict[LayoutType, Callable] = {
     "wide_default": _render_wide_default,
     "split_screen": _render_split_screen,
 }
+
+
+# ─────────────────────────── camera plan ───────────────────────────
+
+
+_SMOOTHABLE_LAYOUTS: set[LayoutType] = {
+    "speaker_close", "active_speaker_close",
+    "person_close", "screen_full",
+    "wide_default", "wide_group",
+}
+
+
+@dataclass
+class CamPlan:
+    """Per-frame (cx, cy, crop_h) for the clip, Gaussian-smoothed across segment
+    boundaries. Transitions speaker_close ↔ screen_full ↔ person_close become
+    plавные zoom/pan вместо hard cut'ов.
+    """
+    cx: np.ndarray
+    cy: np.ndarray
+    crop_h: np.ndarray
+    valid: np.ndarray
+    start_f: int
+
+    def get(self, frame_idx: int) -> Optional[tuple[float, float, int]]:
+        i = frame_idx - self.start_f
+        if i < 0 or i >= len(self.cx) or not self.valid[i]:
+            return None
+        return float(self.cx[i]), float(self.cy[i]), int(round(self.crop_h[i]))
+
+
+def _track_has_recent_detection(
+    track: FaceTrack, frame_idx: int, cuts_set: set, search_window: int = 15,
+) -> bool:
+    """Есть ли у трека детекция в окне ±search_window кадров, БЕЗ source-cut'а между.
+
+    Если есть source cut между ближайшей детекцией и текущим кадром, значит
+    в реальном видео случился монтажный рез, и положение лица «до» не валидно
+    для кадров «после». В таком случае возвращаем False — пусть камера-план
+    интерполирует между соседними сегментами или хард-cut'нется.
+    """
+    for d in track.detections:
+        delta = abs(d.frame_idx - frame_idx)
+        if delta > search_window:
+            continue
+        lo = min(d.frame_idx, frame_idx)
+        hi = max(d.frame_idx, frame_idx)
+        if cuts_set and any(lo < c <= hi for c in cuts_set):
+            continue  # cut между ними → детекция невалидна для этого кадра
+        return True
+    return False
+
+
+def _params_face_crop(track: FaceTrack, frame_idx: int, ctx: RenderCtx) -> Optional[tuple[float, float, float]]:
+    # ⭐ если у трека нет детекции в ±15 кадрах (без source cut между) — позиция
+    # ненадёжна, возвращаем None. В camera_plan такие кадры станут «дырами» в
+    # своём cut-регионе и заполнятся либо соседними валидными значениями того же
+    # региона, либо целиком регион будет невалиден.
+    if not _track_has_recent_detection(track, frame_idx, ctx.cuts_set or set()):
+        return None
+    if ctx.face_smoothers is None:
+        ctx.face_smoothers = {}
+    smoother = get_or_build_smoother(
+        ctx.face_smoothers, track, ctx.meta.n_frames, sigma_frames=20.0,
+        cuts_set=ctx.cuts_set,
+    )
+    s = smoother.at(frame_idx)
+    if s is None:
+        return None
+    face_cx, face_cy, face_h = s
+    crop_h = max(face_h * 3.5, ctx.target_h // 3)
+    crop_h = min(crop_h, ctx.meta.src_h)
+    # cinema headroom: face_center at ~38-40% from top → desired cy below face_cy
+    target_cy = face_cy - face_h * 0.5 + crop_h * 0.40
+    # ⭐ hard guarantee: TOP OF HEAD (incl. hair ≈ face_cy - face_h*0.85) must sit
+    # at least max(60px, 8%·crop_h) below crop_top. Иначе при smoothed-jitter лица
+    # или растущем face_h на close-gesture макушка вылетает за верх кропа.
+    headroom_px = max(60.0, crop_h * 0.08)
+    cy_max = face_cy - face_h * 0.85 + crop_h / 2 - headroom_px
+    cy = min(target_cy, cy_max)
+    return face_cx, cy, crop_h
+
+
+def _params_person_close(seg: SceneSegment, frame_idx: int, ctx: RenderCtx) -> Optional[tuple[float, float, float]]:
+    person_track = next(
+        (t for t in (ctx.tracks_persons or []) if t.track_id == seg.primary_face_id),
+        None,
+    )
+    if person_track is None:
+        return None
+    if ctx.person_smoothers is None:
+        ctx.person_smoothers = {}
+    smoother = get_or_build_smoother(
+        ctx.person_smoothers, person_track, ctx.meta.n_frames, sigma_frames=25.0,
+        cuts_set=ctx.cuts_set,
+    )
+    s = smoother.at(frame_idx)
+    if s is None:
+        return None
+    person_cx, person_cy, person_h = s
+    crop_h = max(person_h * 1.15, ctx.meta.src_h * 0.6)
+    crop_h = min(crop_h, ctx.meta.src_h)
+    # голова в верхних 20-25% person bbox → head_y ≈ person_cy - person_h*0.30
+    head_y = person_cy - person_h * 0.30
+    target_cy = head_y + crop_h * 0.28
+    # ⭐ hard headroom: TOP OF HAIR ≈ person_cy - person_h*0.50 должен быть
+    # ≥ max(60px, 8%·crop_h) ниже crop_top. Иначе при росте person_h на близких
+    # гестах макушка вылетает за верх кропа.
+    headroom_px = max(60.0, crop_h * 0.08)
+    cy_max = person_cy - person_h * 0.50 + crop_h / 2 - headroom_px
+    cy = min(target_cy, cy_max)
+    return person_cx, cy, crop_h
+
+
+def _params_screen_full(frame_idx: int, ctx: RenderCtx) -> Optional[tuple[float, float, float]]:
+    screen = _screen_at(ctx.screens, frame_idx, ctx.meta.fps)
+    if screen is None:
+        return None
+    bbox = screen.bbox
+    crop_h = min(ctx.meta.src_h, max(bbox.h * 1.05, ctx.meta.src_h * 0.95))
+    crop_w = crop_h * 9 / 16
+    raw_cx = bbox.cx
+    if bbox.w < crop_w:
+        slack = (crop_w - bbox.w) / 2
+        raw_cx = max(bbox.cx - slack, crop_w / 2)
+    return raw_cx, float(bbox.cy), crop_h
+
+
+def _params_wide_default(ctx: RenderCtx) -> tuple[float, float, float]:
+    return ctx.meta.src_w / 2, ctx.meta.src_h / 2, float(ctx.meta.src_h)
+
+
+def _params_for_segment(seg: SceneSegment, frame_idx: int, ctx: RenderCtx) -> Optional[tuple[float, float, float]]:
+    """Returns (cx, cy, crop_h) for a single-crop layout, or None.
+
+    ⭐ None означает «нет надёжной позиции» — build_camera_plan пометит кадр
+    invalid и rendering loop вызовет старый renderer (со всей его fallback-
+    логикой через person_close / wide_default). РАНЬШЕ возвращали
+    _params_wide_default — это давало центр кадра, где реального субъекта нет,
+    и появлялись «пустые» frames с занавеской/столом.
+    """
+    if seg.layout in ("speaker_close", "active_speaker_close"):
+        track = next((t for t in ctx.tracks if t.track_id == seg.primary_face_id), None)
+        if track is not None:
+            return _params_face_crop(track, frame_idx, ctx)
+        return None
+    if seg.layout == "person_close":
+        return _params_person_close(seg, frame_idx, ctx)
+    if seg.layout == "screen_full":
+        return _params_screen_full(frame_idx, ctx)
+    if seg.layout in ("wide_default", "wide_group"):
+        return _params_wide_default(ctx)
+    return None  # pip / split — выходят через старые рендеры
+
+
+def _subject_key(seg: SceneSegment, ctx: RenderCtx) -> tuple:
+    """Идентификатор «кого/что показываем» для сегмента.
+
+    Используется чтобы понять, является ли переход seg→seg сменой субъекта.
+    speaker_close pid=A → speaker_close pid=B (A≠B) = разные субъекты → hard cut.
+    speaker_close pid=A → person_close pid=P, если face_to_person[A]==P → ТОТ ЖЕ
+    человек, плавный transition. wide_*/screen_full — отдельные субъекты, но
+    переход к/от них допускает плавный zoom (не hard cut).
+    """
+    lay = seg.layout
+    pid = seg.primary_face_id
+    if lay in ("speaker_close", "active_speaker_close"):
+        # speaker идентифицируется лицом + соответствующим person'ом (если есть mapping)
+        linked_person = (ctx.face_to_person or {}).get(pid) if pid is not None else None
+        return ("speaker", pid, linked_person)
+    if lay == "person_close":
+        # person идентифицируется person_id + face которое к нему привязано
+        face_to_person = ctx.face_to_person or {}
+        linked_face = next((f for f, p in face_to_person.items() if p == pid), None)
+        return ("person", pid, linked_face)
+    if lay == "screen_full":
+        return ("screen", seg.primary_screen_idx)
+    return (lay,)
+
+
+def _subjects_match(a: tuple, b: tuple) -> bool:
+    """Совпадают ли два subject_key — учитываем cross-link face<->person."""
+    if a == b:
+        return True
+    # speaker_close A ↔ person_close P, если P == face_to_person[A]
+    if a[0] == "speaker" and b[0] == "person":
+        # a = ("speaker", face_id, linked_person), b = ("person", person_id, linked_face)
+        return a[2] is not None and a[2] == b[1]
+    if a[0] == "person" and b[0] == "speaker":
+        return b[2] is not None and b[2] == a[1]
+    return False
+
+
+def build_camera_plan(
+    segments: list[SceneSegment],
+    start_f: int,
+    end_f: int,
+    ctx: RenderCtx,
+    sigma_frames: float = 8.0,
+    cut_threshold_px: float = 250.0,
+) -> CamPlan:
+    """Pre-compute camera plan and smooth WITHIN contiguous regions.
+
+    Cuts between разными субъектами НЕ сглаживаются — иначе при переключении
+    speaker_close A → speaker_close B появляется «фантомный» кадр посередине,
+    где камера зависла между двумя лицами с пустым curtain'ом по бокам.
+
+    Две независимые сигнала для cut'а:
+    1. Граница сегмента + изменение субъекта (face_id / person_id) →
+       ВСЕГДА hard cut, даже если cx-delta < threshold (два спикера могут
+       сидеть близко по центру кадра).
+    2. Большая дельта cx/cy между соседними кадрами (>cut_threshold_px) —
+       страховка на случай некорректной классификации.
+
+    sigma_frames=8 (~0.27с @ 30fps) внутри региона → плавный zoom/pan между
+    близкими layout'ами (speaker_close ↔ screen_full, speaker ↔ person того же
+    человека). Между регионами — hard cut, как у редактора.
+    """
+    from scipy.ndimage import gaussian_filter1d
+
+    n = max(0, end_f - start_f)
+    cx_arr = np.zeros(n)
+    cy_arr = np.zeros(n)
+    h_arr = np.zeros(n)
+    valid = np.zeros(n, dtype=bool)
+    fps = ctx.meta.fps
+
+    def find_segment(t: float) -> SceneSegment:
+        for s in segments:
+            if s.start <= t < s.end:
+                return s
+        return segments[-1] if segments else SceneSegment(0, 0, "wide_default")
+
+    # per-frame seg + subject key
+    seg_per_frame: list[SceneSegment] = []
+    subject_per_frame: list[tuple] = []
+    for i in range(n):
+        fi = start_f + i
+        t = i / fps
+        seg = find_segment(t)
+        seg_per_frame.append(seg)
+        subject_per_frame.append(_subject_key(seg, ctx))
+        params = _params_for_segment(seg, fi, ctx)
+        if params is not None:
+            cx_arr[i], cy_arr[i], h_arr[i] = params
+            valid[i] = True
+
+    if not valid.any():
+        return CamPlan(cx_arr, cy_arr, h_arr, valid, start_f)
+
+    # ⭐ детектим резы из ТРЁХ источников:
+    # (a) граница сегмента + смена субъекта → ВСЕГДА hard cut
+    # (b) source cut (cv2-detected scene change в исходнике) → ВСЕГДА hard cut
+    # (c) большая дельта cx/cy между соседними valid-кадрами (страховка)
+    cuts = {0, n}
+    # (a) subject change at segment boundary
+    for i in range(1, n):
+        if not _subjects_match(subject_per_frame[i], subject_per_frame[i-1]):
+            cuts.add(i)
+    # (b) source cuts within window
+    for c in (ctx.cuts_set or set()):
+        rel = c - start_f
+        if 0 < rel < n:
+            cuts.add(rel)
+    cuts_sorted = sorted(cuts)
+
+    # interp+smooth ПО РЕГИОНАМ (между cut'ами), а не глобально — иначе invalid
+    # frames на границе одного региона тянули бы валидные значения из соседнего.
+    final_valid = np.zeros(n, dtype=bool)
+    cx_s = np.zeros(n)
+    cy_s = np.zeros(n)
+    h_s = np.zeros(n)
+    for k in range(len(cuts_sorted) - 1):
+        a, b = cuts_sorted[k], cuts_sorted[k+1]
+        if b <= a:
+            continue
+        region_valid = valid[a:b]
+        if not region_valid.any():
+            # весь регион без валидных кадров — оставляем invalid, рендер уйдёт в fallback layout
+            continue
+        r_idx = np.arange(b - a)
+        v_idx = np.where(region_valid)[0]
+        cx_r = np.interp(r_idx, v_idx, cx_arr[a:b][region_valid])
+        cy_r = np.interp(r_idx, v_idx, cy_arr[a:b][region_valid])
+        h_r = np.interp(r_idx, v_idx, h_arr[a:b][region_valid])
+        # (c) safety: внутри региона тоже бывают большие скачки — режем ещё раз
+        sub_cuts = [0]
+        for j in range(1, b - a):
+            d = max(abs(cx_r[j] - cx_r[j-1]), abs(cy_r[j] - cy_r[j-1]))
+            if d > cut_threshold_px:
+                sub_cuts.append(j)
+        sub_cuts.append(b - a)
+        for s_k in range(len(sub_cuts) - 1):
+            sa, sb = sub_cuts[s_k], sub_cuts[s_k + 1]
+            if sb - sa >= 2:
+                cx_s[a + sa:a + sb] = gaussian_filter1d(cx_r[sa:sb], sigma=sigma_frames, mode="nearest")
+                cy_s[a + sa:a + sb] = gaussian_filter1d(cy_r[sa:sb], sigma=sigma_frames, mode="nearest")
+                h_s[a + sa:a + sb] = gaussian_filter1d(h_r[sa:sb], sigma=sigma_frames, mode="nearest")
+            else:
+                cx_s[a + sa:a + sb] = cx_r[sa:sb]
+                cy_s[a + sa:a + sb] = cy_r[sa:sb]
+                h_s[a + sa:a + sb] = h_r[sa:sb]
+        final_valid[a:b] = True
+
+    return CamPlan(cx_s, cy_s, h_s, final_valid, start_f)
+
+
+def _render_from_plan(frame: np.ndarray, plan_params: tuple[float, float, int], ctx: RenderCtx) -> np.ndarray:
+    cx, cy, crop_h = plan_params
+    crop_h = max(1, min(crop_h, ctx.meta.src_h))
+    crop_w = int(round(crop_h * 9 / 16))
+    crop_w = min(crop_w, ctx.meta.src_w)
+    crop = _crop_centered(frame, cx, cy, crop_w, crop_h)
+    return _resize(crop, ctx.target_w, ctx.target_h)
 
 
 # ─────────────────────────── публичный API ───────────────────────────
@@ -768,6 +1096,11 @@ def render_clip(
                 return s
         return segments[-1] if segments else SceneSegment(0, end - start, "wide_default")
 
+    # ⭐ pre-pass: считаем (cx, cy, crop_h) для каждого кадра по сегменту, потом
+    # Gaussian-сглаживаем через границы. Это превращает hard-cut между
+    # speaker_close и screen_full в плавный zoom/pan за ~0.5с.
+    ctx.camera_plan = build_camera_plan(segments, start_f, end_f, ctx, sigma_frames=8.0)
+
     last_seg_layout: Optional[LayoutType] = None
     cuts_set = set(cuts or [])
     total = max(1, end_f - start_f)
@@ -779,21 +1112,20 @@ def render_clip(
         t_in_clip = (fi - start_f) / fps  # время от начала вырезанного клипа
         seg = find_segment(t_in_clip)
 
-        # ⭐ только на cut'ах (смена ракурса камеры) сбрасываем follower'ы — иначе
-        # camera 0.5с догоняет новую позицию субъекта (при cut близких ракурсов
-        # bbox.cx делает скачок 300+px, и плавный follow раздражает).
-        # На смене сегмента (тот же ракурс) НЕ ресетим — иначе видимый рывок при
-        # переключении speaker_close ↔ active_speaker_close на том же лице.
-        if fi in cuts_set:
-            ctx.face_followers.clear()
-            ctx.screen_ema = EMA2D()
-
+        # cut'ы больше не сбрасывают follower'ы — мы их не используем; камера plan
+        # уже учитывает границы сегментов через smoothing
         if seg.layout != last_seg_layout:
             ctx.screen_ema = EMA2D()
             last_seg_layout = seg.layout
 
-        renderer = _LAYOUT_RENDERERS.get(seg.layout, _render_wide_default)
-        out_frame = renderer(frame, seg, fi, ctx)
+        # ⭐ smoothable layouts → используем сглаженный camera_plan;
+        # special layouts (pip, split) — через старые рендеры
+        plan_params = ctx.camera_plan.get(fi) if seg.layout in _SMOOTHABLE_LAYOUTS else None
+        if plan_params is not None:
+            out_frame = _render_from_plan(frame, plan_params, ctx)
+        else:
+            renderer = _LAYOUT_RENDERERS.get(seg.layout, _render_wide_default)
+            out_frame = renderer(frame, seg, fi, ctx)
         # пишем сырые BGR байты в ffmpeg
         try:
             ff.stdin.write(out_frame.tobytes())

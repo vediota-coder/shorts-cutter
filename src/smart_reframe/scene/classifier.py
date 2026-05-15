@@ -39,6 +39,10 @@ class ClassifierConfig:
     transition_blend_sec: float = 0.4
     pip_screen_min_area_ratio: float = 0.10  # экран должен занимать ≥10% кадра
     pip_face_min_area_ratio: float = 0.005   # ...а лицо ≥0.5%
+    # ⭐ для случая n_faces==1 + big_screen: если лицо ≤ этого порога,
+    # переключаемся в pip_speaker_screen вместо speaker_close (экран как
+    # основной контент, лицо в углу — talking-head + screen-share).
+    pip_face_max_for_screen_ratio: float = 0.06
     wide_threshold_faces: int = 4            # 4+ лиц → wide_group
     # ⭐ слияние соседних сегментов с одинаковым layout, но разным primary_face_id:
     # если суммарная длительность таких микро-кусков мала, выбираем доминирующий face_id.
@@ -54,10 +58,13 @@ def _has_deictic(words_in_window: list[str]) -> bool:
     return any(w in txt for w in DEICTIC_WORDS)
 
 
+_CLASSIFY_SEARCH_WINDOW = 6  # кадров — совпадает с render.py _bbox_at default
+
+
 def _faces_at_time(tracks: list[FaceTrack], frame_idx: int) -> list[tuple[int, "BBox"]]:  # noqa: F821
     out = []
     for t in tracks:
-        b = t.bbox_at(frame_idx)
+        b = t.bbox_at(frame_idx, search_window=_CLASSIFY_SEARCH_WINDOW)
         if b is not None:
             out.append((t.track_id, b))
     return out
@@ -66,7 +73,7 @@ def _faces_at_time(tracks: list[FaceTrack], frame_idx: int) -> list[tuple[int, "
 def _persons_at_time(tracks: list[FaceTrack], frame_idx: int) -> list[tuple[int, "BBox"]]:  # noqa: F821
     out = []
     for t in tracks:
-        b = t.bbox_at(frame_idx)
+        b = t.bbox_at(frame_idx, search_window=_CLASSIFY_SEARCH_WINDOW)
         if b is not None:
             out.append((t.track_id, b))
     return out
@@ -112,7 +119,45 @@ def _classify_frame(
 
     # ── 0 лиц ──
     if n_faces == 0:
+        # если текущее окно не дало экранов — смотрим назад 15с: человек повернулся к доске,
+        # тело перекрывает её, но доска никуда не ушла
+        if not big_screens and persons_in_frame:
+            lookback = _screens_near(screens, frame_idx, meta.fps, window_sec=15.0)
+            lb_big = [s for s in lookback if s.bbox.area / src_area >= cfg.pip_screen_min_area_ratio
+                      and s.frame_idx <= frame_idx]  # только прошлые детекции
+            lb_big.sort(key=lambda s: -s.frame_idx)  # самая последняя
+            if lb_big:
+                big_screens = [lb_big[0]]
+                nearby_screens = lookback
         if big_screens:
+            # ⭐ screen_full кропает 9:16 вокруг центра screen.bbox. Если PERSON
+            # стоит так что его cx ВНЕ итогового crop_x range — screen_full
+            # вырежет его за кадр. Эмулируем кроп классификатором и проверяем.
+            screen = big_screens[0]
+            sbb = screen.bbox
+            # повторяем формулу из _render_screen_full
+            crop_h_screen = min(meta.src_h, max(sbb.h * 1.05, meta.src_h * 0.95))
+            crop_w_screen = crop_h_screen * 9 / 16
+            crop_w_screen = min(crop_w_screen, meta.src_w)
+            crop_cx = sbb.cx
+            crop_x_min = crop_cx - crop_w_screen / 2
+            crop_x_max = crop_cx + crop_w_screen / 2
+            person_outside_screen = False
+            for _pid, pbb in persons_in_frame:
+                # face/head обычно в top 20% person bbox; head_top y ≈ pbb.y
+                # если head_y выше screen_top на >20px, screen_full crop с
+                # cy=sbb.cy всё равно растянется до full height (crop_h ~95% src_h),
+                # но если crop_h меньше src_h, голова может оказаться за пределами.
+                if pbb.y < sbb.y - 30 and crop_h_screen < meta.src_h * 0.95:
+                    person_outside_screen = True
+                    break
+                # cx персоны вне горизонтального crop range — main case
+                if pbb.cx < crop_x_min - 10 or pbb.cx > crop_x_max + 10:
+                    person_outside_screen = True
+                    break
+            if person_outside_screen:
+                extra["reason"] = "person_outside_screen_crop"
+                return "wide_default", extra
             extra["primary_screen_idx"] = nearby_screens.index(big_screens[0])
             return "screen_full", extra
         # ⭐ если есть person'ы (YOLO нашёл человека без лица — спина/профиль/далеко) → person_close
@@ -138,17 +183,18 @@ def _classify_frame(
     # ── 1 лицо ──
     if n_faces == 1:
         face_id, face_bbox = faces[0]
-        face_area_ratio = face_bbox.area / src_area
-        # лицо + большой экран → PiP если спикер активен и/или указывает
-        if big_screens and (deictic or face_area_ratio < 0.05):
-            extra["primary_screen_idx"] = nearby_screens.index(big_screens[0])
-            extra["primary_face_id"] = face_id
-            return "pip_speaker_screen", extra
-        # есть экран и нет речи (закадровый показ) → screen_full
-        if big_screens and not is_speech:
-            extra["primary_screen_idx"] = nearby_screens.index(big_screens[0])
-            return "screen_full", extra
-        # обычный моно-спикер
+        # ⭐ talking-head + screen-share: если в кадре есть большой экран и лицо
+        # сравнительно мелкое (≤6% площади), показываем PiP — экран на фон,
+        # лицо в углу. Иначе старое поведение: speaker_close, экран игнорируется
+        # (talking-head без демо).
+        if big_screens:
+            face_area_ratio = face_bbox.area / src_area
+            if face_area_ratio <= cfg.pip_face_max_for_screen_ratio:
+                extra["primary_face_id"] = face_id
+                extra["primary_screen_idx"] = nearby_screens.index(big_screens[0])
+                extra["reason"] = "screen_with_face_pip"
+                return "pip_speaker_screen", extra
+        # лицо видно → спикер крупно
         extra["primary_face_id"] = face_id
         return "speaker_close", extra
 
@@ -267,8 +313,13 @@ def classify_scenes(
         primary_screen_idx=cur_extra.get("primary_screen_idx"),
     ))
 
+    # ⭐ cut_times передаются в merger'ы — слияние не должно перешагивать cut'ы,
+    # иначе face_id из предыдущего шота тянется в новый, и renderer удерживает
+    # позицию лица, которого в кадре уже нет → «прыжки» камеры.
+    cut_times = sorted({c / meta.fps for c in (cuts or [])})
+
     # фильтр: слишком короткие сегменты сливаем с соседями
-    segments = _merge_short_segments(segments, cfg.min_segment_sec)
+    segments = _merge_short_segments(segments, cfg.min_segment_sec, cut_times)
     # ⭐ второй проход: соседи с тем же layout, но разным primary_face_id —
     # сливаем в один кусок с доминирующим face_id (по суммарной длительности).
     # Это убирает микро-перекидывание камеры между двумя спикерами.
@@ -276,19 +327,39 @@ def classify_scenes(
         segments,
         layouts=cfg.speaker_layouts_for_merge,
         max_chunk_sec=cfg.same_layout_merge_max_sec,
+        cut_times=cut_times,
     )
 
 
-def _merge_short_segments(segments: list[SceneSegment], min_sec: float) -> list[SceneSegment]:
-    """Сегменты короче min_sec поглощаются соседом с тем же layout'ом или предыдущим."""
+def _has_cut_between(start: float, end: float, cut_times: list[float]) -> bool:
+    """True если между [start, end) есть source-cut (исключая сам start)."""
+    return any(start < c < end for c in cut_times)
+
+
+def _merge_short_segments(
+    segments: list[SceneSegment], min_sec: float,
+    cut_times: list[float] | None = None,
+) -> list[SceneSegment]:
+    """Сегменты короче min_sec поглощаются предыдущим только если совпадают
+    (layout, face_id) И между ними нет source-cut.
+
+    Раньше короткий сегмент поглощался безусловно — это тянуло face_id из
+    предыдущего шота на новые кадры (после cut'а), и renderer удерживал
+    позицию лица, которого в новом шоте уже нет → «прыжки» камеры.
+    """
+    cut_times = cut_times or []
     if not segments:
         return []
     out = [segments[0]]
     for seg in segments[1:]:
         prev = out[-1]
         seg_dur = seg.end - seg.start
-        if seg_dur < min_sec:
-            # удлиняем prev до конца seg
+        same_target = (
+            prev.layout == seg.layout
+            and prev.primary_face_id == seg.primary_face_id
+        )
+        cut_between = _has_cut_between(prev.end - 0.05, seg.start + 0.05, cut_times)
+        if seg_dur < min_sec and same_target and not cut_between:
             out[-1] = SceneSegment(
                 start=prev.start, end=seg.end, layout=prev.layout,
                 primary_face_id=prev.primary_face_id,
@@ -304,13 +375,17 @@ def _merge_same_layout_speakers(
     segments: list[SceneSegment],
     layouts: tuple[str, ...],
     max_chunk_sec: float,
+    cut_times: list[float] | None = None,
 ) -> list[SceneSegment]:
     """Сливает подряд идущие сегменты одного layout-а (из ``layouts``) с разным
     primary_face_id в один кусок с face_id, доминирующим по сумме длительностей.
 
     Срабатывает только когда каждый отдельный кусок короче max_chunk_sec —
-    длинные «настоящие» переключения спикеров не трогаем.
+    длинные «настоящие» переключения спикеров не трогаем. Дополнительно: cut
+    в source видео блокирует слияние — после cut'а кадры визуально отличаются,
+    нельзя удерживать face_id из старого шота.
     """
+    cut_times = cut_times or []
     if not segments:
         return []
     out: list[SceneSegment] = []
@@ -322,10 +397,12 @@ def _merge_same_layout_speakers(
             out.append(seg)
             i += 1
             continue
-        # копим run одинакового layout'а
+        # копим run одинакового layout'а ПОКА нет cut'а между соседями
         j = i
         run_max_dur = 0.0
         while j < n and segments[j].layout == seg.layout:
+            if j > i and _has_cut_between(segments[j - 1].end - 0.05, segments[j].start + 0.05, cut_times):
+                break
             d = segments[j].end - segments[j].start
             if d > run_max_dur:
                 run_max_dur = d
