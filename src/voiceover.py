@@ -164,24 +164,9 @@ def translate_segments_ru(
 
 
 def _parse_translation(text: str) -> dict[int, str]:
-    """Достаёт {i: ru} из ответа LLM, толерантно к markdown-обёрткам."""
-    text = text.strip()
-    # срезаем ```json ... ``` если есть
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
-        return {}
-    try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return {}
-    items = data.get("items") or []
-    out: dict[int, str] = {}
-    for it in items:
-        try:
-            out[int(it["i"])] = str(it.get("ru") or "")
-        except (KeyError, ValueError, TypeError):
-            continue
-    return out
+    """Dub-specific: достаёт {i: ru} из ответа LLM. Переиспользует общий парсер."""
+    from .llm.translate import _parse_json_items
+    return _parse_json_items(text, key="ru")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

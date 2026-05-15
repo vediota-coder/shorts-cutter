@@ -12,12 +12,12 @@ from .types import LLMProvider, LLMResponse
 
 # https://www.anthropic.com/pricing — per million tokens
 PRICING = {
-    "claude-haiku-4-5-20251001":   {"in": 1.0,  "out": 5.0,  "cache_read": 0.10, "cache_create": 1.25},
-    "claude-sonnet-4-6-20251008":  {"in": 3.0,  "out": 15.0, "cache_read": 0.30, "cache_create": 3.75},
+    "claude-haiku-4-5":   {"in": 1.0,  "out": 5.0,  "cache_read": 0.10, "cache_create": 1.25},
+    "claude-sonnet-4-6":  {"in": 3.0,  "out": 15.0, "cache_read": 0.30, "cache_create": 3.75},
     "claude-opus-4-7":             {"in": 15.0, "out": 75.0, "cache_read": 1.50, "cache_create": 18.75},
 }
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-haiku-4-5"
 
 
 class AnthropicProvider(LLMProvider):
@@ -35,8 +35,8 @@ class AnthropicProvider(LLMProvider):
     def model_for_tier(self, tier):
         return {
             "high": "claude-opus-4-7",
-            "balanced": "claude-sonnet-4-6-20251008",
-            "fast": "claude-haiku-4-5-20251001",
+            "balanced": "claude-sonnet-4-6",
+            "fast": "claude-haiku-4-5",
         }.get(tier, DEFAULT_MODEL)
 
     def generate(

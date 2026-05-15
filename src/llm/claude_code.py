@@ -41,15 +41,15 @@ class ClaudeCodeProvider(LLMProvider):
         DEPRECATED_MAP = {
             "claude-opus-4.5":   "claude-opus-4-7",
             "claude-opus-4-5":   "claude-opus-4-7",
-            "claude-sonnet-4.5": "claude-sonnet-4-6-20251008",
-            "claude-sonnet-4-5": "claude-sonnet-4-6-20251008",
-            "claude-haiku-4.5":  "claude-haiku-4-5-20251001",
-            "claude-haiku-4-5":  "claude-haiku-4-5-20251001",
-            "":                  "claude-haiku-4-5-20251001",
-            "default":           "claude-haiku-4-5-20251001",
+            "claude-sonnet-4.5": "claude-sonnet-4-6",
+            "claude-sonnet-4-5": "claude-sonnet-4-6",
+            "claude-haiku-4.5":  "claude-haiku-4-5",
+            "claude-haiku-4-5":  "claude-haiku-4-5",
+            "":                  "claude-haiku-4-5",
+            "default":           "claude-haiku-4-5",
         }
         m = (model or "").strip()
-        effective_model = DEPRECATED_MAP.get(m, m) if m else "claude-haiku-4-5-20251001"
+        effective_model = DEPRECATED_MAP.get(m, m) if m else "claude-haiku-4-5"
         cmd = ["claude", "-p", prompt, "--output-format", "json", "--model", effective_model]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:

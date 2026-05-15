@@ -122,7 +122,7 @@ def main():
     p.add_argument("job_id")
     p.add_argument("--voice", default="EXAVITQu4vr4xnSDxMaL", help="ElevenLabs voice_id (default: Sarah)")
     p.add_argument("--model", default="eleven_v3")
-    p.add_argument("--llm-model", default="claude-haiku-4-5-20251001")
+    p.add_argument("--llm-model", default="claude-haiku-4-5")
     p.add_argument("--brand", default="excella", help="бренд для лого/позиции")
     p.add_argument("--no-logo", action="store_true", help="не накладывать лого")
     p.add_argument("--reuse-dub", action="store_true",

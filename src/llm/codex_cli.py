@@ -52,7 +52,10 @@ class CodexCLIProvider(LLMProvider):
             "--skip-git-repo-check",
             "--ephemeral",
             "--ignore-user-config",  # чтобы кастомные tools/permissions не тянули контекст
-            "--output-format", "json",
+            # ⭐ В новых версиях codex CLI флаг --output-format заменён на --json
+            # (envelope вида {"result": "...", "usage": {...}}). Если ещё нужно
+            # structured-output по схеме — используется --output-schema <FILE>.
+            "--json",
         ]
         if model and model != "default":
             cmd += ["-m", model]
@@ -62,21 +65,53 @@ class CodexCLIProvider(LLMProvider):
         if proc.returncode != 0:
             raise RuntimeError(f"codex exec failed: {proc.stderr.strip()[:300] or proc.stdout.strip()[:300]}")
 
-        # пробуем JSON envelope; если formatter поменяется — фолбэк на текст
+        # ⭐ Новый формат codex --json — поток JSONL событий:
+        #   {"type":"turn.started"}
+        #   {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+        #   {"type":"turn.completed","usage":{"input_tokens":N,"output_tokens":N,...}}
+        # Старый формат был single envelope {"result":"...","usage":{...}} — fallback оставлен.
         text = ""
         usage_in = usage_out = 0
         cost = 0.0
         model_name = model or "default"
-        try:
-            envelope = json.loads(proc.stdout)
-            text = envelope.get("result") or envelope.get("output") or envelope.get("text") or ""
-            u = envelope.get("usage") or {}
+        text_parts: list[str] = []
+        last_envelope: dict | None = None
+        for raw_line in proc.stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            t = ev.get("type")
+            if t == "item.completed":
+                item = ev.get("item") or {}
+                if item.get("type") in ("agent_message", "assistant_message", "text"):
+                    msg_text = item.get("text") or item.get("content") or ""
+                    if msg_text:
+                        text_parts.append(msg_text)
+            elif t == "turn.completed":
+                u = ev.get("usage") or {}
+                usage_in = int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
+                usage_out = int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+                cost = float(ev.get("total_cost_usd") or 0)
+                model_name = ev.get("model") or model_name
+            elif t is None and ("result" in ev or "output" in ev or "text" in ev):
+                # legacy single-envelope формат
+                last_envelope = ev
+        if text_parts:
+            text = "\n".join(text_parts)
+        elif last_envelope:
+            text = (last_envelope.get("result") or last_envelope.get("output")
+                    or last_envelope.get("text") or "")
+            u = last_envelope.get("usage") or {}
             usage_in = int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
             usage_out = int(u.get("output_tokens") or u.get("completion_tokens") or 0)
-            cost = float(envelope.get("total_cost_usd") or 0)
-            model_name = envelope.get("model") or model_name
-        except json.JSONDecodeError:
-            # fallback: stdout — это сам ответ
+            cost = float(last_envelope.get("total_cost_usd") or 0)
+            model_name = last_envelope.get("model") or model_name
+        else:
+            # совсем фолбэк: возможно текст без JSON-обёртки
             text = proc.stdout
 
         # если завернули в markdown — отчистим
