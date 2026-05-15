@@ -26,6 +26,7 @@ import os
 import pickle
 import re
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,7 +76,7 @@ from .smart_reframe import (
     SceneSegment,
     analyze_video, build_scenes, render_smart,
 )
-from .subtitles import write_ass
+from .subtitles import AccentKeyword, write_ass
 from .voiceover import (
     DEFAULT_TTS_MODEL, DEFAULT_VOICE_RU_FEMALE, EMOTION_TAG_MODELS,
     build_dub_track, dub_full_video, translate_segments_ru,
@@ -447,8 +448,40 @@ def run(
             ru_segs = translated_to_segments(translated_segs)
             if ru_segs:
                 ass_segments = ru_segs
+
+        # ⭐ план эффектов считаем ДО субтитров — accents оттуда пробрасываем
+        # в write_ass для подсветки ключевых слов прямо в тексте.
+        # Сам apply_effects вызывается ниже (после mux audio+subs), используя
+        # тот же план — без повторного LLM-вызова.
+        effects_plan = None
+        if effects:
+            try:
+                effects_prov = effects_provider or llm_provider or ""
+                effects_plan = plan_effects(
+                    segments=segments,
+                    clip_start=clip.start, clip_end=clip.end,
+                    clip_title=clip.title,
+                    enable_zoom=effects_zoom,
+                    enable_emoji=effects_emoji,
+                    enable_sfx=effects_sfx,
+                    enable_hook=effects_hook,
+                    provider=effects_prov or None,
+                )
+                write_plan_json(effects_plan, cache_dir / f"{slug}.effects.json")
+            except Exception as ex:
+                emit(base_pct + 0.3, f"[{i}/{total}] LLM-план эффектов упал: {ex}")
+                effects_plan = None
+
+        accent_kws: list[AccentKeyword] = []
+        if effects_plan is not None:
+            for a in effects_plan.accents:
+                accent_kws.append(AccentKeyword(
+                    start=a.start, end=a.end, word=a.word,
+                ))
+
         write_ass(ass_segments, clip.start, clip.end, subs,
-                  target_w=master_w, target_h=master_h, template=sub_template)
+                  target_w=master_w, target_h=master_h, template=sub_template,
+                  accent_keywords=accent_kws)
 
         # ⭐ face overlay накладываем ДО субтитров — чтобы субтитры рисовались
         #   поверх фото, а не наоборот
@@ -509,23 +542,11 @@ def run(
             pass
 
         # ── эффекты (zoom / emoji / hook / sfx) ──
-        # Один LLM-запрос на клип → план → один ffmpeg pass поверх with_subs.
+        # План уже посчитан выше (до write_ass) → один LLM-вызов на клип.
         # Эффекты применяются ДО брендинга, чтобы CTA-кадр и watermark остались чистыми.
-        if effects:
+        if effects and effects_plan is not None:
             try:
-                effects_prov = effects_provider or llm_provider or ""
-                plan = plan_effects(
-                    segments=segments,
-                    clip_start=clip.start, clip_end=clip.end,
-                    clip_title=clip.title,
-                    enable_zoom=effects_zoom,
-                    enable_emoji=effects_emoji,
-                    enable_sfx=effects_sfx,
-                    enable_hook=effects_hook,
-                    provider=effects_prov or None,
-                )
-                # сохраняем план рядом — для дебага и retry без LLM
-                write_plan_json(plan, cache_dir / f"{slug}.effects.json")
+                plan = effects_plan
                 if not plan.is_empty():
                     with_fx = cache_dir / f"{slug}.fx.mp4"
                     apply_effects(
@@ -552,8 +573,14 @@ def run(
             try:
                 apply_brand(with_subs, master, brand_tpl, cta_key=cta, skip_face_overlay=True)
                 with_subs.unlink(missing_ok=True)
+            except subprocess.CalledProcessError as ex:
+                # ⭐ ffmpeg-сбой (например, незаэскейпленный текст в drawtext) —
+                # достаём stderr и логируем подробно
+                err = (ex.stderr or b"").decode("utf-8", errors="replace")[-500:]
+                emit(base_pct + 2,
+                     f"[{i}/{total}] apply_brand ffmpeg fail: {err}")
+                with_subs.replace(master)
             except Exception as ex:
-                # ⭐ логируем чтобы видеть причину (раньше silently глотало → лого пропадал)
                 emit(base_pct + 2, f"[{i}/{total}] apply_brand fail: {ex}")
                 with_subs.replace(master)
         else:
@@ -612,6 +639,36 @@ def run(
     except Exception:
         pass
 
+    # ── зашиваем SEO-метаданные в MP4 (читают YouTube/Google) ──
+    try:
+        from .seo import stamp_metadata as _stamp, SEOData as _SEOData
+        emit, done = _stage_emitter(on_progress, "seo-stamp")
+        total_s = max(1, sum(len(r.files) for r in results))
+        idx = 0
+        for r in results:
+            tags = list(r.meta_hashtags or [])
+            yt_desc = (r.meta_descriptions or {}).get("youtube") or ""
+            seo = _SEOData(
+                title=r.meta_title or r.title,
+                description=yt_desc,
+                tags=tags,
+            )
+            for label, fname in list(r.files.items()):
+                idx += 1
+                p = out_dir / fname
+                if not p.exists():
+                    continue
+                try:
+                    tmp = p.with_name(p.stem + ".seo.mp4")
+                    _stamp(p, tmp, seo=seo, artist=r.brand or brand)
+                    tmp.replace(p)
+                    emit(idx / total_s * 100, f"meta в {p.name}")
+                except Exception as e:
+                    emit(idx / total_s * 100, f"meta-stamp fail {p.name}: {e}")
+        done(f"meta зашита в {idx} файлов")
+    except Exception:
+        pass
+
     on_progress("done", 100, f"готово: {len(results)} клипов", 0)
     return results
 
@@ -626,7 +683,8 @@ def main():
     g.add_argument("--file", help="Локальный файл")
     p.add_argument("--out", default="output")
     p.add_argument("--downloads", default="downloads")
-    p.add_argument("--max-clips", type=int, default=8)
+    p.add_argument("--max-clips", type=int, default=8,
+                   help="максимум клипов, или 0 = AI решает сам")
     p.add_argument("--whisper-model", default="medium")
     p.add_argument("--voiceover", action="store_true",
                    help="дублировать на русском через ElevenLabs (нужен ELEVENLABS_API_KEY)")
