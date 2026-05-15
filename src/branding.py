@@ -139,6 +139,11 @@ class BrandTemplate:
     watermark_scale: float = 0.10            # ширина = scale * target_w
     watermark_height_scale: Optional[float] = None  # если задан — фиксированная высота (доля target_h)
     watermark_radius: int = 0                # px, скругление углов watermark (0 = нет)
+    # ⭐ подложка под watermark — drawbox со скруглёнными углами и padding'ом.
+    # None = без фона (default). Цвет в формате "#RRGGBB" или "#RRGGBBAA".
+    watermark_bg_color: Optional[str] = None
+    watermark_bg_padding: int = 8            # px отступ от логотипа до края подложки
+    watermark_bg_radius: int = 12            # px скругление углов подложки
     # ⭐ face overlay — твоя фотка/видео в углу для reaction-формата
     face_overlay_path: Optional[str] = None
     face_overlay_position: WatermarkPos = "bottom-left"
@@ -146,6 +151,11 @@ class BrandTemplate:
     face_overlay_height_scale: Optional[float] = None  # если задан — фикс. высота
     face_overlay_circle: bool = True
     bottom_strip: Optional[BottomStrip] = field(default_factory=BottomStrip)
+    # ⭐ Cover-overlay: hook-текст поверх обложки (постера). Шрифт + accent-цвет
+    # для подложки/обводки. Само наложение делает src/cover.py.
+    cover_font_family: Optional[str] = None       # None → fallback на bottom_strip.font_family
+    cover_accent_color: str = "#C4F84A"           # excella lime
+    cover_text_color: str = "#0A0D0A"             # excella ink (тёмный — читаем на lime)
     # ⭐ Pronunciation overrides для TTS (ElevenLabs alias-substitution).
     # При синтезе речи каждое вхождение `key` в RU-тексте заменяется на `value`
     # (с учётом регистра первой буквы). Полезно для имён, брендов, аббревиатур.
@@ -308,6 +318,13 @@ def update_brand_partial(name: str, patch: dict) -> BrandTemplate:
         tpl.watermark_height_scale = float(v) if v is not None else None
     if "watermark_radius" in patch:
         tpl.watermark_radius = int(patch["watermark_radius"] or 0)
+    if "watermark_bg_color" in patch:
+        v = (patch["watermark_bg_color"] or "").strip()
+        tpl.watermark_bg_color = v or None
+    if "watermark_bg_padding" in patch:
+        tpl.watermark_bg_padding = int(patch["watermark_bg_padding"] or 0)
+    if "watermark_bg_radius" in patch:
+        tpl.watermark_bg_radius = int(patch["watermark_bg_radius"] or 0)
     if "face_overlay_path" in patch:
         tpl.face_overlay_path = patch["face_overlay_path"] or None
     if "face_overlay_position" in patch:
@@ -328,6 +345,13 @@ def update_brand_partial(name: str, patch: dict) -> BrandTemplate:
             current = asdict(tpl.bottom_strip) if tpl.bottom_strip else asdict(BottomStrip())
             current.update(bs)
             tpl.bottom_strip = BottomStrip(**current)
+
+    if "cover_font_family" in patch:
+        tpl.cover_font_family = patch["cover_font_family"] or None
+    if "cover_accent_color" in patch:
+        tpl.cover_accent_color = (patch["cover_accent_color"] or "#C4F84A").strip()
+    if "cover_text_color" in patch:
+        tpl.cover_text_color = (patch["cover_text_color"] or "#0A0D0A").strip()
 
     if "cta_default" in patch:
         tpl.cta_default = patch["cta_default"]
@@ -383,6 +407,28 @@ def _wm_position(pos: WatermarkPos, target_w: int, target_h: int, wm_w: int, wm_
     if pos == "bottom-left":
         return margin, target_h - wm_h - margin
     return target_w - wm_w - margin, target_h - wm_h - margin  # bottom-right
+
+
+def _escape_drawtext(s: str) -> str:
+    """Экранирует текст для ffmpeg drawtext text='…' (filtergraph-уровень).
+
+    Без этого любая запятая/двоеточие/апостроф/обратный слэш в CTA-тексте
+    ломает весь -filter_complex и весь apply_brand тихо падает (clip публикуется
+    без бренда и CTA).
+
+    Порядок важен: backslash сначала.
+    """
+    if not s:
+        return ""
+    s = s.replace("\\", "\\\\")
+    # внутри одинарных кавычек ffmpeg parser требует закрыть кавычку, экранировать
+    # apostrophe бэкслэшем, и снова открыть кавычку: '\''
+    s = s.replace("'", "'\\''")
+    # filter-уровневые специсимволы
+    s = s.replace(":", r"\:").replace(",", r"\,").replace(";", r"\;")
+    s = s.replace("[", r"\[").replace("]", r"\]")
+    s = s.replace("%", r"\%")
+    return s
 
 
 def build_brand_filtergraph(
@@ -457,9 +503,45 @@ def build_brand_filtergraph(
             )
         else:
             filters.append(f"[{wm_input_idx}:v]scale={scale_w}:{scale_h},{wm_pre},colorchannelmixer=aa={tpl.watermark_opacity}[wm]")
+
+        # ⭐ Подложка под watermark: pad с цветом фона + опционально скругление углов.
+        # Применяется после scale/colorkey/radius самого watermark — чтобы фон
+        # обтекал уже подготовленный лого с alpha.
+        if tpl.watermark_bg_color:
+            bg_hex = tpl.watermark_bg_color.lstrip("#")
+            bg_alpha = "1.0"
+            if len(bg_hex) == 8:
+                # формат RRGGBBAA: вытягиваем alpha-байт в 0..1
+                bg_alpha = f"{int(bg_hex[6:8], 16) / 255.0:.3f}"
+                bg_hex = bg_hex[0:6]
+            elif len(bg_hex) != 6:
+                bg_hex = "000000"  # fallback
+            pad_px = max(0, tpl.watermark_bg_padding)
+            bg_radius = max(0, tpl.watermark_bg_radius)
+            # pad: расширяем canvas, watermark центруется (pad_px со всех сторон)
+            filters.append(
+                f"[wm]pad=w='iw+{2 * pad_px}':h='ih+{2 * pad_px}':"
+                f"x={pad_px}:y={pad_px}:color=0x{bg_hex}@{bg_alpha}[wm_bg]"
+            )
+            wm_label = "[wm_bg]"
+            # скругление углов фона
+            if bg_radius > 0:
+                tl = f"lt(X,{bg_radius})*lt(Y,{bg_radius})*gt(hypot(X-{bg_radius},Y-{bg_radius}),{bg_radius})"
+                tr = f"gt(X,W-{bg_radius})*lt(Y,{bg_radius})*gt(hypot(X-(W-{bg_radius}),Y-{bg_radius}),{bg_radius})"
+                bl = f"lt(X,{bg_radius})*gt(Y,H-{bg_radius})*gt(hypot(X-{bg_radius},Y-(H-{bg_radius})),{bg_radius})"
+                br = f"gt(X,W-{bg_radius})*gt(Y,H-{bg_radius})*gt(hypot(X-(W-{bg_radius}),Y-(H-{bg_radius})),{bg_radius})"
+                outside = f"({tl})+({tr})+({bl})+({br})"
+                filters.append(
+                    f"{wm_label}geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                    f"a='if({outside},0,alpha(X,Y))'[wm_bg_r]"
+                )
+                wm_label = "[wm_bg_r]"
+        else:
+            wm_label = "[wm]"
+
         margin = max(20, int(round(40 * scale)))
         pos = wmpos_map[tpl.watermark_position].format(m=margin)
-        filters.append(f"{cur_label}[wm]overlay={pos}[v_wm]")
+        filters.append(f"{cur_label}{wm_label}overlay={pos}[v_wm]")
         cur_label = "[v_wm]"
 
     # 1b. Face overlay — твоё фото в углу (reaction-стиль)
@@ -504,7 +586,7 @@ def build_brand_filtergraph(
         filters.append(
             f"{cur_label}drawbox=x=0:y={strip_top}:w={target_w}:h={bs_height}:"
             f"color=0x{bg}@{alpha}:t=fill,"
-            f"drawtext=text='{bs.text}':fontcolor=0x{bs.color.lstrip('#')}:"
+            f"drawtext=text='{_escape_drawtext(bs.text)}':fontcolor=0x{bs.color.lstrip('#')}:"
             f"fontsize={bs_font}:x=(w-text_w)/2:y={strip_top + (bs_height - bs_font) // 2}:"
             f"font='{getattr(bs, 'font_family', 'Helvetica Neue')}':"
             f"{'borderw=2:bordercolor=black:' if bs.bold else ''}"
@@ -527,13 +609,13 @@ def build_brand_filtergraph(
         filters.append(
             f"{cur_label}drawbox=x=0:y=0:w={target_w}:h={target_h}:"
             f"color=0x{bg}@0.85:t=fill:enable='gte(t,{cta_start})',"
-            f"drawtext=text='{cta_style.text}':fontcolor=0x{tc}:"
+            f"drawtext=text='{_escape_drawtext(cta_style.text)}':fontcolor=0x{tc}:"
             f"fontsize={cta_font}:x=(w-text_w)/2:y={main_y}:"
             f"font='Helvetica Neue':borderw={bw_main}:bordercolor=black:"
             f"shadowcolor=black@0.7:shadowx=2:shadowy=2:"
             f"enable='gte(t,{cta_start})'"
             + (
-                f",drawtext=text='{cta_style.sub_text}':fontcolor=0x{ac}:"
+                f",drawtext=text='{_escape_drawtext(cta_style.sub_text)}':fontcolor=0x{ac}:"
                 f"fontsize={sub_font}:x=(w-text_w)/2:y={sub_y}:"
                 f"font='Helvetica Neue':borderw={bw_main}:bordercolor=black:"
                 f"enable='gte(t,{cta_start})'" if cta_style.sub_text else ""
