@@ -58,6 +58,9 @@ __pycache__/
 downloads/
 output/
 jobs/
+# Scraped YouTube-channel data для content-plan (categorized.json / rewrites.json / transcripts/).
+# Пересобирается через UI: POST /api/content-plan/import.
+content_data/
 *.mp4
 *.mp3
 *.wav
