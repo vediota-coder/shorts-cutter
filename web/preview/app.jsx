@@ -50,7 +50,7 @@ function mapBrandCTA(brand) {
 }
 
 function mapJobsToRecent(jobs) {
-  // backend: [{id, status, stage, progress, n_clips, title, source_url, error}]
+  // backend: [{id, status, stage, progress, n_clips, title, source_url, error, created_at}]
   return (jobs || []).map((j) => ({
     title: j.title || j.source_url || j.id,
     count: j.n_clips || 0,
@@ -59,6 +59,7 @@ function mapJobsToRecent(jobs) {
     _stage: j.stage,
     _error: j.error,
     _progress: j.progress,
+    _createdAt: j.created_at || 0,
   }));
 }
 
@@ -110,6 +111,20 @@ function mapClipsFromJob(jobAsdict) {
       poster: POSTER_ROT[i % POSTER_ROT.length],
     };
   });
+}
+
+function menuItemStyle(active) {
+  return {
+    textDecoration: "none",
+    color: active ? "#11140F" : "var(--ink)",
+    fontWeight: active ? 700 : 500,
+    padding: "7px 14px",
+    borderRadius: 999,
+    fontSize: 13,
+    background: active ? "var(--lime)" : "transparent",
+    transition: "background .15s, color .15s",
+    fontFamily: "Inter, system-ui, sans-serif",
+  };
 }
 
 function App() {
@@ -172,6 +187,10 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState("");
 
+  // ── publish-all dropdown ──────────────────────────────
+  const [publishMenuOpen, setPublishMenuOpen] = useState(false);
+  const [publishingAll, setPublishingAll] = useState(false);
+
   const i18n = window.I18N[tweaks.lang] || window.I18N.ru;
 
   useEffect(() => {
@@ -181,6 +200,40 @@ function App() {
   const showToast = (m) => {
     setToast(m);
     setTimeout(() => setToast(""), 1800);
+  };
+
+  // ── публикация всех клипов сразу в выбранные платформы ──
+  // platforms: массив из ["vk", "youtube", "instagram"]. Идём последовательно
+  // (clip → platform), чтобы не выпалить параллельно 20 запросов на сервер.
+  const publishAllToPlatforms = async (platforms) => {
+    setPublishMenuOpen(false);
+    if (publishingAll) return;
+    setPublishingAll(true);
+    let total = 0, ok = 0, fail = 0;
+    for (const c of clips) {
+      if (!c._jobId) continue;
+      for (const p of platforms) {
+        total++;
+        const body = p === "youtube"   ? { privacy: "public" }
+                   : p === "vk"        ? { privacy: "all" }
+                   : p === "instagram" ? { share_to_feed: true }
+                   : {};
+        try {
+          showToast(`#${c._index + 1} → ${p}…`);
+          const r = await window.API.publishClip(c._jobId, c._index + 1, p, body);
+          setClips((prev) => prev.map((x) => x.id === c.id ? {
+            ...x,
+            publications: { ...(x.publications || {}), [p]: { url: r?.url, video_id: r?.video_id } },
+          } : x));
+          ok++;
+        } catch (e) {
+          fail++;
+        }
+      }
+    }
+    setPublishingAll(false);
+    const failPart = fail ? ` · ${i18n.publishAllFailed} ${fail}` : "";
+    showToast(`${i18n.publishAllDone} ${ok}/${total}${failPart}`);
   };
 
   // ── загрузка с backend на mount (Фаза 2A) ─────────────
@@ -283,7 +336,7 @@ function App() {
       const payload = {
         url: url || undefined,
         file: fileObj || undefined,
-        max_clips: maxClips,
+        max_clips: maxClips === "auto" ? 0 : maxClips,
         whisper_model: whisperModel,
         sub_template: subtitleStyleId,
         brand,
@@ -385,20 +438,140 @@ function App() {
     setClips((prev) => prev.map((c) => (c.id === id ? { ...c, activeStyle: styleId } : c)));
   };
 
+  // вызывается из SubtitleEditor.apply() после успешного restyle — обновляем
+  // clip.files (новый видеофайл, скорее всего с тем же именем но другим mtime),
+  // sub_overrides, sub_template и cache-busting toggle для URL'а <video>.
+  const handleClipRestyled = (clipId, updatedClipFields) => {
+    setClips((prev) => prev.map((c) => c.id === clipId ? {
+      ...c,
+      ...updatedClipFields,
+      _files: updatedClipFields.files || c._files,
+      _bust: (c._bust || 0) + 1,
+    } : c));
+  };
+
   // открыть конкретный job из «Последних заданий» → загрузить и показать его клипы
   const openJob = async (j) => {
     if (!j._id) return;
     try {
       const job = await window.API.job(j._id);
+      setCurrentJobId(j._id);
+
+      // ⭐ Предзаполняем форму настройками с которыми job был запущен (если есть)
+      const s = job.settings || {};
+      if (s.url || job.source_url) setUrl(s.url || job.source_url);
+      if (s.max_clips != null) setMaxClips(s.max_clips);
+      if (s.whisper_model) setWhisperModel(s.whisper_model);
+      if (s.sub_template) setSubtitleStyleId(s.sub_template);
+      if (s.brand) setBrand(s.brand);
+      if (s.cta) setCtaPresetId(s.cta);
+      if (s.llm_provider) setLlmProviderId(s.llm_provider);
+      if (s.llm_model) setLlmModel(s.llm_model);
+      if (s.picker_extra != null) setPickerExtra(s.picker_extra);
+      if (s.voiceover != null) setVoiceover(s.voiceover);
+      if (s.voiceover_engine) setVoiceoverEngine(s.voiceover_engine);
+      if (s.voiceover_mode) setVoiceoverMode(s.voiceover_mode);
+      if (s.voiceover_voice) setVoiceoverVoice(s.voiceover_voice);
+      if (s.voiceover_model) setVoiceoverModel(s.voiceover_model);
+      if (s.voiceover_target_lang) setVoiceoverTargetLang(s.voiceover_target_lang);
+      if (s.output_size) setOutputSize(s.output_size);
+
+      // ⭐ Если job ещё работает — подключаемся к live-стриму как при свежем запуске:
+      // показываем ProgressBlock с уже пройденным логом + новые сообщения по WS.
+      if (job.status === "running" || job.status === "pending" || job.status === "queued") {
+        // отрисуем уже накопленный лог
+        const past = (job.log || []).map((e) => ({
+          t: e.ts || _now(),
+          msg: e.msg || "",
+          ok: e.level === "info" || e.level === "ok",
+        }));
+        setLog(past);
+        setPercent(job.progress || 0);
+        setCutting(true);
+        setShowClips(false);
+        // закрываем старый поток если был и подписываемся на новый job_id
+        if (wsCloseRef.current) { try { wsCloseRef.current(); } catch {} }
+        wsCloseRef.current = window.openJobStream(j._id, {
+          onMessage: (line) => {
+            if (line.progress != null) setPercent(line.progress);
+            if (line.msg) {
+              const ok = line.stage === "done" || line.msg.startsWith("✓");
+              setLog((p) => [...p, { t: _now(), msg: line.msg, ok }]);
+            }
+            if (line.stage === "done") {
+              setPercent(100);
+              window.API.job(j._id).then((jj) => {
+                const realClips = mapClipsFromJob(jj);
+                if (realClips.length) { setClips(realClips); setShowClips(true); setCutting(false); }
+              });
+            }
+            if (line.stage === "error") {
+              setLog((p) => [...p, { t: _now(), msg: `${i18n.errorPrefix} ${line.msg}`, ok: false }]);
+              setCutting(false);
+            }
+          },
+          onClose: () => {
+            setCutting(false);
+            window.API.jobs(30).then((js) => {
+              if (js?.length) {
+                window.MOCK.RECENT_JOBS = mapJobsToRecent(js);
+                setVersion((v) => v + 1);
+              }
+            });
+          },
+        });
+        showToast(`${i18n.jobOpened} ${(j.title || "").slice(0, 30)}… (live)`);
+        return;
+      }
+
+      // done/error — показываем клипы (если есть)
       const realClips = mapClipsFromJob(job);
       setClips(realClips);
-      setCurrentJobId(j._id);
       setShowClips(true);
+      setCutting(false);
       showToast(`${i18n.jobOpened} ${(j.title || "").slice(0, 30)}…`);
     } catch (e) {
       showToast(`${i18n.jobOpenFail} ${e.message}`);
     }
   };
+
+  // === Routing между разделами (Студия / Контент-план / Суфлёр) ===
+  const initialRoute = (() => {
+    const h = (location.hash || "#studio").replace("#", "").split("?")[0];
+    return ["studio", "content", "prompter"].includes(h) ? h : "studio";
+  })();
+  const [route, setRouteState] = React.useState(initialRoute);
+  const [prompterArgs, setPrompterArgs] = React.useState(() => {
+    // если зашли по прямой ссылке #prompter?id=XXX&v=0&mode=slave
+    const h = location.hash || "";
+    const q = h.split("?")[1] || "";
+    const p = new URLSearchParams(q);
+    return { id: p.get("id") || "", v: parseInt(p.get("v") || "0", 10), mode: p.get("mode") || "master" };
+  });
+  const setRoute = (r) => {
+    setRouteState(r);
+    location.hash = "#" + r;
+  };
+  const openPrompter = (id, v) => {
+    setPrompterArgs({ id, v: v || 0, mode: "master" });
+    location.hash = `#prompter?id=${encodeURIComponent(id)}&v=${v || 0}`;
+    setRouteState("prompter");
+  };
+  React.useEffect(() => {
+    const onHash = () => {
+      const h = (location.hash || "#studio").replace("#", "");
+      const base = h.split("?")[0];
+      if (["studio", "content", "prompter"].includes(base)) setRouteState(base);
+      // обновляем args если hash сменился (например, slave-режим на iPhone)
+      const q = (location.hash || "").split("?")[1] || "";
+      const p = new URLSearchParams(q);
+      if (p.get("id")) {
+        setPrompterArgs({ id: p.get("id"), v: parseInt(p.get("v") || "0", 10), mode: p.get("mode") || "master" });
+      }
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   return (
     <>
@@ -407,6 +580,11 @@ function App() {
         <div className="logo">
           <Logo size={20}/>
         </div>
+        <nav className="excella-menu" style={{ display: "flex", gap: 4, flex: 1, justifyContent: "center", alignItems: "center" }}>
+          <a href="#studio" onClick={(e)=>{e.preventDefault();setRoute("studio");}} style={menuItemStyle(route==="studio")}>Студия</a>
+          <a href="#content" onClick={(e)=>{e.preventDefault();setRoute("content");}} style={menuItemStyle(route==="content")}>Контент-план</a>
+          <a href="#prompter" onClick={(e)=>{e.preventDefault();setRoute("prompter");}} style={menuItemStyle(route==="prompter")}>Суфлёр</a>
+        </nav>
         <div className="row" style={{ gap: 8 }}>
           <span className="brand-pill">
             <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--green)" }}></span>
@@ -426,7 +604,10 @@ function App() {
         </div>
       </header>
 
-      <main className="shell">
+      {route === "content" && window.CONTENT_PLAN && <window.CONTENT_PLAN.ContentPlanScreen onOpenPrompter={openPrompter} />}
+      {route === "prompter" && window.TELEPROMPTER && <window.TELEPROMPTER.TeleprompterScreen vid={prompterArgs.id} vIdx={prompterArgs.v} mode={prompterArgs.mode} />}
+
+      {route === "studio" && <main className="shell">
         <HeroBlock
           t={i18n}
           backendInfo={backendInfo}
@@ -476,7 +657,67 @@ function App() {
               <h3>{i18n.readyClips} <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 16, marginLeft: 8 }}>· {clips.length} {i18n.clipsAbbr}</span></h3>
               <div className="row" style={{ gap: 8 }}>
                 <button className="btn btn-ghost"><Icon name="download" size={14}/> {i18n.downloadAll}</button>
-                <button className="btn btn-primary"><Icon name="send" size={14}/> {i18n.publishAllVk}</button>
+                <div className="publish-wrap">
+                  <button
+                    className="publish-trigger"
+                    disabled={publishingAll}
+                    aria-expanded={publishMenuOpen}
+                    aria-haspopup="menu"
+                    onClick={() => setPublishMenuOpen((v) => !v)}
+                  >
+                    <Icon name="send" size={14}/>
+                    <span>{publishingAll ? i18n.publishAllBusy : i18n.publishAll}</span>
+                    <span className="caret-icon"><Icon name="caret" size={10}/></span>
+                  </button>
+                  {publishMenuOpen && (
+                    <>
+                      <div
+                        className="publish-backdrop"
+                        onClick={() => setPublishMenuOpen(false)}
+                      />
+                      <div className="publish-menu" role="menu">
+                        <div className="publish-menu-label">{i18n.publishMenuLabel}</div>
+                        <button
+                          className="publish-item"
+                          role="menuitem"
+                          onClick={() => publishAllToPlatforms(["vk"])}
+                        >
+                          <span className="pdot vk">
+                            <img className="plogo" src="/preview/assets/vk.svg" alt="VK"/>
+                          </span>
+                          <span>{i18n.publishToVk}</span>
+                          <span className="arr">→</span>
+                        </button>
+                        <button
+                          className="publish-item"
+                          role="menuitem"
+                          onClick={() => publishAllToPlatforms(["youtube"])}
+                        >
+                          <span className="pdot youtube">
+                            <img className="plogo" src="/preview/assets/youtube.svg" alt="YouTube"/>
+                          </span>
+                          <span>{i18n.publishToYoutube}</span>
+                          <span className="arr">→</span>
+                        </button>
+                        <div className="publish-divider"/>
+                        <button
+                          className="publish-item"
+                          role="menuitem"
+                          onClick={() => publishAllToPlatforms(["vk", "youtube"])}
+                        >
+                          <span className="pdot both">
+                            <span className="plogo-stack">
+                              <img className="plogo" src="/preview/assets/vk.svg" alt="VK"/>
+                              <img className="plogo" src="/preview/assets/youtube.svg" alt="YouTube"/>
+                            </span>
+                          </span>
+                          <span>{i18n.publishToBoth}</span>
+                          <span className="arr">→</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -496,21 +737,21 @@ function App() {
                               : target === "vk"      ? { privacy: "all" }
                               : target === "instagram" ? { share_to_feed: true }
                               : {};
-                    try {
-                      showToast(`${i18n.publishingTo} ${target}…`);
-                      const r = await window.API.publishClip(
-                        clip._jobId, clip._index + 1, target, body
-                      );
-                      // mark clip as published so card обновится
-                      setClips((prev) => prev.map((x) => x.id === clip.id ? {
-                        ...x,
-                        publications: { ...(x.publications || {}), [target]: { url: r?.url, video_id: r?.video_id } },
-                      } : x));
-                      showToast(`${i18n.publishedTo} ${target}`);
-                    } catch (e) { showToast(`${i18n.publishError} ${target}: ${e.message}`); }
+                    showToast(`${i18n.publishingTo} ${target}…`);
+                    // ⭐ ошибки НЕ глотаем — PublishCard сам ловит и показывает inline
+                    const r = await window.API.publishClip(
+                      clip._jobId, clip._index + 1, target, body
+                    );
+                    setClips((prev) => prev.map((x) => x.id === clip.id ? {
+                      ...x,
+                      publications: { ...(x.publications || {}), [target]: { url: r?.url, video_id: r?.video_id } },
+                    } : x));
+                    showToast(`${i18n.publishedTo} ${target}`);
+                    return r;
                   }}
                   onMetrics={() => setMetricsOpen(true)}
                   onChangeStyle={handleChangeStyle}
+                  onClipRestyled={handleClipRestyled}
                 />
               ))}
             </div>
@@ -520,7 +761,7 @@ function App() {
         {tweaks.showRecentJobs && !showClips && !cutting && (
           <RecentJobs key={`recent-${version}`} t={i18n} onClick={openJob}/>
         )}
-      </main>
+      </main>}
 
       <MetricsModal open={metricsOpen} onClose={() => setMetricsOpen(false)} t={i18n}/>
       <BrandsModal open={brandsOpen} onClose={() => setBrandsOpen(false)} t={i18n} brand={brand} setBrand={setBrand}/>

@@ -31,6 +31,8 @@ const API = {
   backend:           ()      => _fetch("GET", "/backend"),
   llmProviders:      ()      => _fetch("GET", "/llm/providers"),
   subtitleTemplates: ()      => _fetch("GET", "/subtitle-templates"),
+  subtitleTemplatePreviewStyle: (key, target_h = 1920) =>
+                                _fetch("GET", `/subtitle-templates/${encodeURIComponent(key)}/preview-style?target_h=${target_h}`),
   brands:            ()      => _fetch("GET", "/brands"),
   brand:             (n)     => _fetch("GET", `/brands/${encodeURIComponent(n)}`),
   prompts:           ()      => _fetch("GET", "/prompts"),
@@ -39,12 +41,35 @@ const API = {
   elevenlabsVoices:  ()      => _fetch("GET", "/elevenlabs/voices"),
   jobs:              (limit = 30) => _fetch("GET", `/jobs?limit=${limit}`),
   job:               (id)    => _fetch("GET", `/jobs/${id}`),
+  retryJob:          (id)    => _fetch("POST", `/jobs/${id}/retry`),
   jobScenes:         (id, i) => _fetch("GET", `/jobs/${id}/clips/${i}/scenes`),
+  jobClipWords:      (id, i) => _fetch("GET", `/jobs/${id}/clips/${i}/words`),
+  jobClipSubStyle:   (id, i, target_h = 1056) =>
+                                _fetch("GET", `/jobs/${id}/clips/${i}/sub-style?target_h=${target_h}`),
+  jobClipNosubsUrl:  (id, i)        => `/jobs/${id}/clips/${i}/nosubs`,
+  jobClipSetChosenThumbnail: (id, i, thumbnail) =>
+                                _fetch("PATCH", `/jobs/${id}/clips/${i}/chosen-thumbnail`, { json: { thumbnail } }),
+  jobClipGenerateCover: (id, i, body = {}) =>
+                                _fetch("POST", `/jobs/${id}/clips/${i}/cover`, { json: body }),
+  jobClipCoverUrl:    (id, i, bust)   =>
+                                `/jobs/${id}/clips/${i}/cover.png${bust ? `?v=${bust}` : ""}`,
+  jobClipTranslate:   (id, i, body)   =>
+                                _fetch("POST", `/jobs/${id}/clips/${i}/translate`, { json: body }),
+  jobClipAddSfx:      (id, i, body)   =>
+                                _fetch("POST", `/jobs/${id}/clips/${i}/add-sfx`, { json: body }),
+  jobClipPatchSubTemplate: (id, i, template) =>
+                                _fetch("PATCH", `/jobs/${id}/clips/${i}/sub-template`, { json: { template } }),
+  jobClipPatchSubOverrides: (id, i, patch) =>
+                                _fetch("PATCH", `/jobs/${id}/clips/${i}/sub-overrides`, { json: patch }),
+  jobClipResetSubOverrides: (id, i) =>
+                                _fetch("DELETE", `/jobs/${id}/clips/${i}/sub-overrides`),
+  jobClipRestyle: (id, i, body) =>
+                                _fetch("POST", `/jobs/${id}/clips/${i}/restyle`, { json: body }),
   publishStatus:     (plat, brand) =>
                                 _fetch("GET", `/publish/${plat}/status/${encodeURIComponent(brand)}`),
   uniquenessPresets: ()      => _fetch("GET", "/uniqueness/presets"),
   audioLibrary:      ()      => _fetch("GET", "/audio-library"),
-  dashboard:         ()      => _fetch("GET", "/dashboard/all"),
+  dashboard:         (refresh = false) => _fetch("GET", `/dashboard/all${refresh ? "?refresh=true" : ""}`),
   improvementStats:  ()      => _fetch("GET", "/improvement/stats"),
 
   // ── мутации ────────────────────────────────────────────

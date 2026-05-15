@@ -28,7 +28,7 @@ function HeroBlock({ t, backendInfo, onOpenMetrics, onOpenBrands, onOpenSettings
 
       <h1 className="h-display hero-title">
         {t.heroLine1}<br/>
-        {t.heroLine2In} <span className="lime-mark">{t.heroShorts}</span>.
+        {t.heroLine2In} <span className="lime-mark">{t.heroShorts}</span>
       </h1>
 
       <p className="hero-sub">
@@ -195,17 +195,39 @@ function CutForm({
       </div>
 
       <div className="row" style={{ gap: 10, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
-        <div className="row" style={{ gap: 8 }}>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <span className="label" style={{ margin: 0 }}>{t.clipsCount}</span>
           <div className="seg">
             {[5, 8, 10, 15].map(n => (
               <button key={n} className={maxClips === n ? "on" : ""} onClick={() => setMaxClips(n)}>{n}</button>
             ))}
+            <button
+              className={maxClips === "auto" ? "on" : ""}
+              onClick={() => setMaxClips("auto")}
+              title={t.clipsAutoHint}
+            >
+              {t.clipsAuto}
+            </button>
           </div>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{t.clipsCustomOr}</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            className="input"
+            value={typeof maxClips === "number" && ![5, 8, 10, 15].includes(maxClips) ? String(maxClips) : ""}
+            placeholder={t.clipsCustomPlaceholder}
+            onChange={(e) => {
+              const digits = e.target.value.replace(/\D/g, "");
+              if (!digits) return;  // не сбрасываем выбор при пустом инпуте
+              const n = parseInt(digits, 10);
+              if (n >= 1) setMaxClips(n);
+            }}
+            style={{ width: 72, height: 30, padding: "0 8px", fontSize: 13, textAlign: "center" }}
+          />
         </div>
         <div style={{ flex: 1 }}></div>
         <div style={{ fontSize: 12, color: "var(--muted)" }}>
-          {t.etaHint}
+          {maxClips === "auto" ? t.clipsAutoBadge : t.etaHint}
         </div>
       </div>
 
@@ -221,18 +243,34 @@ function CutForm({
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10 }}>
           {SUBTITLE_STYLES.map((s) => {
             const isActive = subtitleStyleId === s.id;
-            const label =
-              s.id === "karaoke" ? "Karaoke" :
-              s.id === "block" ? "Block" :
-              s.id === "minimal" ? "Minimal" :
-              s.id === "neon" ? "Neon" :
-              s.id === "telegram" ? "Telegram" : "Big white";
-            const desc =
-              s.id === "karaoke" ? t.subStyleKaraoke :
-              s.id === "block" ? t.subStyleByPhrase :
-              s.id === "minimal" ? t.subStyleMinimal :
-              s.id === "neon" ? t.subStyleNeon :
-              s.id === "telegram" ? t.subStyleTelegram : t.subStyleBigwhite;
+            // Лейбл и описание: для базовых ID используем i18n, для всех остальных
+            // (включая submagic/captions/podcast_pro и custom-стили) берём s.name
+            // из бекенда, который уже содержит читаемое имя (e.g. "⚡ Submagic").
+            const labelMap = {
+              karaoke: "Karaoke", block: "Block", minimal: "Minimal",
+              neon: "Neon", telegram: "Telegram", big_white: "Big white",
+              submagic: "Submagic", captions: "Captions", podcast_pro: "Podcast Pro",
+              beast: "Beast", karaoke_fill: "Karaoke Fill", highlight_box: "Highlight",
+              bubble: "Bubble", chroma: "Chroma",
+            };
+            const descMap = {
+              karaoke: t.subStyleKaraoke,
+              block: t.subStyleByPhrase,
+              minimal: t.subStyleMinimal,
+              neon: t.subStyleNeon,
+              telegram: t.subStyleTelegram,
+              big_white: t.subStyleBigwhite,
+              submagic: t.subStyleSubmagic,
+              captions: t.subStyleCaptions,
+              podcast_pro: t.subStylePodcastPro,
+              beast: t.subStyleBeast,
+              karaoke_fill: t.subStyleKaraokeFill,
+              highlight_box: t.subStyleHighlightBox,
+              bubble: t.subStyleBubble,
+              chroma: t.subStyleChroma,
+            };
+            const label = labelMap[s.id] || (s.name || s.id);
+            const desc = descMap[s.id] || s.name || "";
             return (
               <button
                 key={s.id}
@@ -333,8 +371,8 @@ function CutForm({
                 <label className="label">{t.modelLabel}</label>
                 <select className="select" value={llmModel} onChange={(e) => setLlmModel(e.target.value)}>
                   <option value="">{t.modelAutoFastCheap}</option>
-                  <option value="claude-haiku-4-5-20251001">{t.modelHaikuFast}</option>
-                  <option value="claude-sonnet-4-6-20251008">{t.modelSonnetBalance}</option>
+                  <option value="claude-haiku-4-5">{t.modelHaikuFast}</option>
+                  <option value="claude-sonnet-4-6">{t.modelSonnetBalance}</option>
                   <option value="claude-opus-4-7">{t.modelOpusFlagship}</option>
                 </select>
               </div>
@@ -838,16 +876,134 @@ function PickerExtraField({ t, value, onChange }) {
   );
 }
 
-function SubtitlePreview({ id }) {
-  switch (id) {
-    case "karaoke":  return <span className="sub-preview sub-karaoke">мо<span className="hl">мент</span></span>;
-    case "block":    return <span className="sub-preview sub-block">фраза</span>;
-    case "minimal":  return <span className="sub-preview sub-minimal">мин</span>;
-    case "neon":     return <span className="sub-preview sub-neon">неон</span>;
-    case "telegram": return <span className="sub-preview sub-telegram">эфир</span>;
-    case "bigwhite": return <span className="sub-preview sub-bigwhite">х10</span>;
-    default: return null;
-  }
+// ── single source of truth для отрисовки субтитров в браузере ─────────
+// Style JSON пришёл с бекенда (template_to_web_style). Все размеры — в px
+// для целевого target_h. Для чипов селектора потребитель использует target_h
+// поменьше (320), для overlay над видео — фактический output_h.
+
+const _SUB_STYLE_CACHE = new Map();
+
+async function fetchSubStyle(key, targetH = 320) {
+  const k = `${key}@${targetH}`;
+  if (_SUB_STYLE_CACHE.has(k)) return _SUB_STYLE_CACHE.get(k);
+  const p = window.API.subtitleTemplatePreviewStyle(key, targetH).catch(() => null);
+  _SUB_STYLE_CACHE.set(k, p);
+  return p;
 }
+
+// Применяет JSON стиль к одному чанку (например, "слово СЛОВО") + per-word
+// акценты (выделение активного / accent / chroma). words = [{text, kind}],
+// kind ∈ {plain, active, accent, chroma}.
+function SubtitleChunk({ style, words, debug = false }) {
+  if (!style) return null;
+  const fontSize = style.fontSize;
+  const fontWeight = style.fontWeight;
+  const fontStyle = style.fontStyle;
+  const fontFamily = `${style.fontFamily}, system-ui, sans-serif`;
+  const baseColor = style.color;
+  const letterSpacing = style.letterSpacing ? `${style.letterSpacing}px` : undefined;
+
+  const containerStyle = {
+    display: "inline-block",
+    maxWidth: "100%",
+    fontFamily,
+    fontWeight,
+    fontStyle,
+    fontSize,
+    color: baseColor,
+    letterSpacing,
+    lineHeight: style.lineHeight || 1.18,
+    textAlign: "center",
+    textTransform: style.uppercase ? "uppercase" : "none",
+    textShadow: style.textShadow || undefined,
+    // ⭐ word-wrap: ASS auto-wraps по max_chars_per_line; в WEB используем
+    // max-width: 92% wrapper'а + normal whitespace. Без этого "ЭТО ТЕСТ
+    // СУБТИТРОВ" вылетает за границы кадра в submagic/chroma.
+    whiteSpace: "normal",
+    overflowWrap: "break-word",
+    wordBreak: "normal",
+  };
+  if (style.background) {
+    Object.assign(containerStyle, {
+      backgroundColor: style.background.color,
+      paddingLeft: style.background.paddingX,
+      paddingRight: style.background.paddingX,
+      paddingTop: style.background.paddingY,
+      paddingBottom: style.background.paddingY,
+      borderRadius: style.background.borderRadius || 0,
+      textShadow: undefined, // box-стиль не нуждается в outline
+    });
+  }
+
+  const renderWord = (w, idx) => {
+    const isActive = w.kind === "active";
+    const isAccent = w.kind === "accent";
+    const isChroma = w.kind === "chroma";
+    const ws = {};
+    // ⭐ scale через font-size, не transform: иначе inline-block съедает соседний пробел
+    // и слова склеиваются (видно как "тестсубтитров" вместо "тест субтитров").
+    const baseSize = style.fontSize;
+    if (isActive && style.highlight && style.highlight.use !== false) {
+      ws.color = style.highlight.color;
+      const sc = (style.highlight.scale || 100) / 100;
+      if (sc !== 1) ws.fontSize = `${baseSize * sc}px`;
+    }
+    if (isAccent && style.accent) {
+      ws.color = style.accent.color;
+      const sc = (style.accent.scale || 100) / 100;
+      if (sc !== 1) ws.fontSize = `${baseSize * sc}px`;
+    }
+    if (isChroma && style.chromaCycle && style.chromaCycle.length) {
+      ws.color = style.chromaCycle[idx % style.chromaCycle.length];
+    }
+    return (
+      <React.Fragment key={idx}>
+        {idx > 0 && " "}
+        <span style={ws}>{w.text}</span>
+      </React.Fragment>
+    );
+  };
+
+  return (
+    <span style={containerStyle} data-debug={debug ? JSON.stringify(words) : undefined}>
+      {words.map(renderWord)}
+    </span>
+  );
+}
+
+// Демо-чанк для каждого шаблона — короткие, чтоб уместиться в 76px чип.
+const _DEMO_WORDS = {
+  karaoke:       [{ text: "мо",   kind: "plain"  }, { text: "мент",  kind: "active" }],
+  block:         [{ text: "фраза", kind: "plain" }],
+  minimal:       [{ text: "мин",   kind: "plain" }],
+  neon:          [{ text: "неон",  kind: "active" }],
+  telegram:      [{ text: "эфир",  kind: "plain" }],
+  big_white:     [{ text: "х10",   kind: "plain" }],
+  submagic:      [{ text: "милл",  kind: "plain"  }, { text: "ион", kind: "accent" }],
+  captions:      [{ text: "плашка", kind: "plain" }],
+  podcast_pro:   [{ text: "подкаст", kind: "plain" }],
+  beast:         [{ text: "беаст",  kind: "accent" }],
+  karaoke_fill:  [{ text: "за",     kind: "plain"  }, { text: "ливка", kind: "active" }],
+  highlight_box: [{ text: "слово",  kind: "plain"  }, { text: "бокс",  kind: "active" }],
+  bubble:        [{ text: "пилюля", kind: "plain"  }],
+  chroma:        [{ text: "цвет",   kind: "chroma" }],
+};
+
+function SubtitlePreview({ id }) {
+  const [style, setStyle] = React.useState(null);
+  React.useEffect(() => {
+    let cancel = false;
+    fetchSubStyle(id, 320).then((s) => { if (!cancel) setStyle(s); });
+    return () => { cancel = true; };
+  }, [id]);
+  if (!style) return <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>…</span>;
+  const words = _DEMO_WORDS[id] || [{ text: id, kind: "plain" }];
+  return <SubtitleChunk style={style} words={words}/>;
+}
+
+// экспорт для overlay (Phase 2) + чипов в clip cards
+window.SubtitleChunk = SubtitleChunk;
+window.fetchSubStyle = fetchSubStyle;
+window.SubtitlePreviewFromKey = SubtitlePreview;
 
 window.HEROCUT = { HeroBlock, CutForm };

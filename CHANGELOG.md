@@ -5,6 +5,55 @@
 
 ## [Unreleased]
 
+### Added
+- **Выбор количества клипов: ручной ввод + AI-авто** (`web/preview/hero-cut.jsx`, `src/picker.py`). К пресетам [5,8,10,15] добавлены: кнопка [AI авто] (LLM сам решает оптимальное число) и числовой input без верхней границы. Транспорт через тот же `max_clips`: 0 = auto, число = строгий лимит «до N». В auto-режиме picker подменяет user_msg на «реши САМ оптимальное количество» и дописывает к system prompt блок «АВТО-РЕЖИМ ВЫБОРА КОЛИЧЕСТВА» с ориентиром по длительности (<10 мин: 0–3, 10–40 мин: 3–7, >40 мин: 7–15) и явным запретом натягивать слабые моменты до круглого числа. CLI `--max-clips 0` тоже включает auto.
+- **Cover Designer — hook-overlay поверх постера** (`src/cover.py`): берёт chosen_thumbnail и накладывает большой UPPERCASE-крючок (из meta_title или явно заданного `hook_text`) на цветной плашке. Auto-fit fontsize: уменьшается пока самая длинная строка не помещается в плашку. Шрифт + accent/text-цвета — из новых полей `BrandTemplate.cover_font_family / cover_accent_color / cover_text_color`. Не пишет своей рисовалки текста — переиспользует ffmpeg drawtext + `_escape_drawtext` из branding. Endpoints: `POST /jobs/{id}/clips/{i}/cover` (генерация), `GET /jobs/{id}/clips/{i}/cover.png` (отдача). UI: collapse-секция «Обложка с хуком» в карточке клипа с textarea hook + позиция + live preview.
+- **AI-translate субтитров на 4 языка** (`src/subtitles_translate.py` + `src/llm/translate.py`): RU→EN/PT-BR/ES/DE через Claude. Не парсит ASS — работает на уровне Segment-объектов, переводит `Segment.text` через общий `translate_strings` (батчи по 80, JSON-формат), пересоздаёт word-тайминги равномерным распределением по тому же `[start, end]`. Использует кешированный `silent.mp4` (без аудио, без субтитров) — НЕ запускает smart-reframe заново, только новый ASS + mux + brand. Endpoint `POST /jobs/{id}/clips/{i}/translate {target_langs}`. Сохраняется в `clip.translations[lang] = {ass, files}`. UI: collapse-секция с чекбоксами языков + список готовых переводов со ссылками на mp4.
+- **Sound FX на акцентах** (`src/sfx.py`): накладывает короткие стинги (whoosh/swoosh/ding/pop из `audio_library/sfx/`) на cut'ы и onset'ы речи. Тайминги — из уже сохранённого `analysis.pkl` (`SmartAnalysis.cuts` + `asd_per_frame`), без новой детекции. 2 пресета: `subtle` (swoosh+pop тихо, gap 1.5s), `energetic` (whoosh+ding громко, gap 0.8s). Audio mix через ffmpeg amix+adelay (тот же паттерн что в `add_music`), видео не пере­рендерится (`-c:v copy`). Endpoint `POST /jobs/{id}/clips/{i}/add-sfx`. UI: collapse-секция «Sound FX» с выбором стиля и чекбоксами типов акцентов.
+- **Общий translate-хелпер** (`src/llm/translate.py`): generic batch-translate для произвольных пар языков + универсальный `_parse_json_items` парсер JSON-ответов LLM. `voiceover._parse_translation` теперь делегирует в общий парсер — нет дублирования логики. Dub-specific промпт (ударения, audio tags, EN→RU) остался в voiceover.
+
+- **WYSIWYG-редактор субтитров в стиле Vizard**:
+  - `src/sub_style.py` `template_to_web_style(template, target_h)` выводит CSS-ready JSON из того же `SubTemplate`, который используется в `write_ass` — превью гарантированно совпадает с burn'ом. Раньше превью описывалось хардкоженным CSS в `styles.css`, расходилось при правках шаблонов и быстро устаревало.
+  - `GET /subtitle-templates/{key}/preview-style?target_h=N` — стиль для чипа в селекторе.
+  - `GET /jobs/{id}/clips/{i}/sub-style?target_h=N` — стиль для конкретного клипа: base preset + per-clip overrides слиты.
+  - `GET /jobs/{id}/clips/{i}/words` — whisper-слова, сдвинутые в clip-relative time, для overlay'я.
+  - `PATCH /jobs/{id}/clips/{i}/sub-overrides` (28 полей `SubTemplate`) — мгновенно меняет стиль БЕЗ re-render'а; overlay подхватывает через 220 мс.
+  - `DELETE /jobs/{id}/clips/{i}/sub-overrides` — сброс всех правок к чистому пресету.
+  - `POST /jobs/{id}/clips/{i}/restyle` теперь принимает `overrides` — финальный burn в файл с overrides поверх template.
+- **WYSIWYG overlay** субтитров поверх `<video>` в карточке клипа: рендерится в `requestAnimationFrame` через JSON-стиль, подсвечивает текущий чанк/слово на основе word timestamps. Toggle "Aa" в углу плеера (по умолчанию on).
+- **Direct-manipulation редактор поверх видео (Vizard-style)**: click по overlay → selection mode с пунктирной рамкой + 4 угловыми handle'ами. Drag по телу overlay меняет `margin_v` (px от низа), drag по угловому handle меняет `size` пропорционально (projection на наружный диагональный вектор). Изменения применяются мгновенно в overlay, PATCH `/sub-overrides` идёт debounced 220 мс. Esc или клик вне overlay → deselect.
+- **Toolbar редактора субтитров** в табе "edit" клипа (secondary к direct-manipulation): picker шаблонов с paritет-точными чипами + collapsible-секции «Размер и позиция», «Цвет», «Стиль» (slider'ы для size/margin_v/outline/shadow/letter_spacing, color picker'ы для color/highlight/accent/outline_color, toggle'ы bold/uppercase/pop_in/auto_capitalize). Правки сохраняются debounced (220 мс) в `state.json`. Кнопка «Применить» запускает `POST /restyle` → новый burn-файл, video URL обновляется через cache-bust query.
+- **Pro-шаблоны субтитров (8 новых)**: `submagic` (Hormozi: UPPERCASE bold + жёлтый акцент + pop-in), `captions` (Wrapbox: полупрозрачный бокс), `podcast_pro` (clean минимал), `beast` (MrBeast: жёлтые CAPS + красный акцент), `karaoke_fill` (CapCut: progressive `\k`-fill слева-направо), `highlight_box` (Veed: подложка под активным словом), `bubble` (Klap: каждое слово на белой пилюле), `chroma` (Opus ChromaClips: циклы цветов per-word). Итого 14 шаблонов в UI.
+- **`progressive_fill` + `chroma_cycle`** поля в `SubTemplate` — управляют ASS `\k`-fill и циклической раскраской слов соответственно.
+- **`AccentKeyword` API**: `write_ass(..., accent_keywords=[...])` подсвечивает слова из `EffectsPlan.accents` индивидуальным цветом/scale прямо в субтитрах (как Submagic/Opus Clip), не только zoom/emoji.
+- **Auto-fit ширины**: `effective_max_chars` в `subtitles.py` пересчитывает количество слов на строке исходя из `target_w` и метрик шрифта, чтобы текст не вылезал за кадр на узких разрешениях.
+- **CPS-based timing** (`min_cps` поле SubTemplate, по умолч. 17): длительность каждого события считается как `max(min_chunk_duration, chars/min_cps)` — короткие фразы продлеваются для читаемости, не залезая на следующий чанк (gap 30мс).
+- **Smooth word durations** (`min_word_duration`, 0.12s): короткие слова Whisper'а (например, "и", "а" с длительностью <0.12s) расширяются до читаемого минимума.
+- **Smart capitalization** (`auto_capitalize`): первое слово клипа и любое слово после паузы >0.5s капитализируется автоматически (для не-UPPERCASE стилей).
+- **Safe-area presets** (параметр `safe_area` в `write_ass`): `tiktok` / `youtube_shorts` / `reels` поднимают `margin_v` чтобы субтитры не залезали под нижний UI платформы.
+- **Тест-стенд `scripts/test_subtitles.py`**: валидация всех 9 пресетов × 3 разрешения × 4 фикстуры (RU/EN/long-word/empty) + ffmpeg burn-in sanity.
+
+### Fixed
+- **Smart-reframe regression: голова спикера обрезалась когда он стоит у доски**. Job 972b83078939 (новый whiteboard-видео) — 87-96% сцен выбирались как `screen_full`, кроп вырезал ровно доску (33% кадра), а спикер стоял справа/слева от неё с головой выше доски → голова за границей кропа.
+  - Корень: в `classifier.py` правило «есть big_screen (>=10% кадра) → screen_full» не учитывало позицию спикера относительно итогового screen-кропа.
+  - Фикс: перед `screen_full` эмулируем geometry кропа (`crop_h = max(screen.h*1.05, src_h*0.95)`, `crop_w = crop_h * 9/16`, `cx = screen.cx`). Если у любого person'а `cx` вне итогового `crop_x_range` ИЛИ голова выше screen_top на >30px при неполном-height кропе → fallback на `wide_default` (показывает весь кадр, доска+спикер).
+  - До: clip 2 = 96% screen_full. После: clip 2 = 96% wide_default — голова спикера в кадре. Не задел старый whiteboard-job 937558d7c341 (там screen меньше 10%).
+- **Bubble pill (ASS `\p1` shape) рендерился слева от текста, не под ним**. `\an5\pos(center)` libass не интерпретировал как «центр shape на pos» — shape оставался с абсолютными координатами от top-left frame. Переписали `_pill_shape_cmd` чтобы координаты шли от (0,0)=top-left самого shape, и переключились на `\an7\pos(left_x, top_y)` — pill теперь точно под текстом.
+- **WYSIWYG-овer­lay: scaled слова съедали пробел между словами** (например "тестсубтитров"). CSS `transform: scale()` на inline-block элементе клеит соседний текст. Заменили на `font-size: baseSize * scale`.
+- **WYSIWYG-overlay: длинный текст вылезал за границы кадра** (`submagic`/`chroma` "ЭТО ТЕСТ СУБТИТРОВ"). Контейнер имел `white-space: nowrap`. Заменили на `whitespace: normal; overflow-wrap: break-word` — теперь работает как ASS auto-wrap.
+- **Smart-reframe: «пустые» frames в подкаст/интервью клипах** на границах между разными спикерами (outreach_01 00:03/00:11, outreach_03 00:45/00:50/01:00 в job ae336bf6911a). Корневая причина — person tracker иногда сливает разных физических людей в один track через source cut, и гауссово сглаживание усредняло их позиции в фантомный центр кадра. Исправлено:
+  - `SmoothedTrack` теперь принимает `cuts_set` и сглаживает каждый сегмент между cut'ами независимо
+  - `_params_face_crop` возвращает None если у трека нет детекции в ±15 кадрах без source cut между → camera plan помечает кадр invalid → fallback на `_render_speaker_close` который сам делает fallback на `person_close` через `face_to_person`
+  - `build_camera_plan` теперь добавляет hard cut в трёх случаях: смена субъекта на границе сегмента, source cut, или большая дельта cx/cy между соседними кадрами (страховка). Интерполяция и сглаживание делаются per-region между cut'ами
+  - `_params_for_segment` больше НЕ фолбэкает на `_params_wide_default` для face/person/screen layouts — возвращает None, чтобы rendering loop использовал старые renderers с их fallback-логикой вместо центрированного кропа
+  - Headroom в `_params_face_crop` и `_params_person_close` теперь гарантирует ≥max(60px, 8%·crop_h) над макушкой (face_cy − face_h·0.85 для лица, person_cy − person_h·0.5 для тела) — иначе при росте bbox на близком gesture макушка вылетала за верх кропа
+- **Логотипы VK/YouTube в публикационном меню** не отображались — `<img src="assets/...">` использовал относительный путь, который на странице `/` резолвился в `/assets/vk.svg` (404). Заменено на абсолютный `/preview/assets/...`.
+- **Pickerlабелы новых шаблонов субтитров** в hero-cut.jsx — отсутствующие IDs (`submagic`, `captions`, `podcast_pro`) фолбэчили на "Big white". Добавлены i18n-ключи и явный map.
+
+### Changed
+- `src/pipeline.py`: `plan_effects` теперь вычисляется ДО `write_ass`, accents пробрасываются в субтитры, повторного LLM-вызова нет.
+- `web/app.py`: `SubTemplatePatch` принимает новые поля (`uppercase`, `pop_in`, `accent_color`, `accent_scale`, `back_color`, `back_alpha`, `border_style`, `letter_spacing`, `italic`).
+
 ### Roadmap (запланировано)
 
 **Фаза 1 — Перформанс (неделя 1):**

@@ -15,15 +15,17 @@ function MetricsModal({ open, onClose, t }) {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
 
-  const reload = React.useCallback(() => {
+  // первый показ — читает кеш (быстро). Кнопка "Обновить" — pull свежих данных с API.
+  const load = React.useCallback((refresh) => {
     setLoading(true); setError("");
-    window.API.dashboard()
+    window.API.dashboard(refresh)
       .then((d) => setData(d))
       .catch((e) => setError(e.message || String(e)))
       .finally(() => setLoading(false));
   }, []);
+  const reload = React.useCallback(() => load(true), [load]);
 
-  React.useEffect(() => { if (open) reload(); }, [open, reload]);
+  React.useEffect(() => { if (open) load(false); }, [open, load]);
 
   const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
   const rows = data?.rows || [];
@@ -695,6 +697,46 @@ function BrandOverlaysTab({ brand, brandData, onChanged }) {
                   onChange={(e) => setPatch({ watermark_opacity: Number(e.target.value) / 100 })}
                   style={{ width: "100%" }}
                 />
+              </div>
+              <div style={{ gridColumn: "1 / -1", marginTop: 8 }}>
+                <label className="label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!brandData.watermark_bg_color}
+                    onChange={(e) => setPatch({
+                      watermark_bg_color: e.target.checked ? (brandData.watermark_bg_color || "#0A0D0A") : null,
+                    })}
+                  />
+                  Подложка под логотипом
+                </label>
+                {brandData.watermark_bg_color && (
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr", gap: 12, marginTop: 8, alignItems: "center" }}>
+                    <input
+                      type="color"
+                      value={brandData.watermark_bg_color || "#0A0D0A"}
+                      onChange={(e) => setPatch({ watermark_bg_color: e.target.value })}
+                      style={{ width: 44, height: 36, padding: 0, border: "1px solid var(--line)", borderRadius: 6, cursor: "pointer" }}
+                    />
+                    <div>
+                      <label className="label" style={{ fontSize: 11 }}>Padding · {brandData.watermark_bg_padding ?? 8}px</label>
+                      <input
+                        type="range" min={0} max={32} step={2}
+                        value={brandData.watermark_bg_padding ?? 8}
+                        onChange={(e) => setPatch({ watermark_bg_padding: Number(e.target.value) })}
+                        style={{ width: "100%" }}
+                      />
+                    </div>
+                    <div>
+                      <label className="label" style={{ fontSize: 11 }}>Скругление фона · {brandData.watermark_bg_radius ?? 12}px</label>
+                      <input
+                        type="range" min={0} max={32} step={2}
+                        value={brandData.watermark_bg_radius ?? 12}
+                        onChange={(e) => setPatch({ watermark_bg_radius: Number(e.target.value) })}
+                        style={{ width: "100%" }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -81,6 +81,10 @@ class JobState:
     error: Optional[str] = None
     title: str = ""        # для отображения в списке
     source_url: str = ""   # URL источника
+    created_at: float = 0.0   # unix timestamp создания job'а — для сортировки
+    # ⭐ Настройки с которыми job был запущен — чтобы форма предзаполнилась
+    # при открытии running/done job-а («продолжить как будто только запустил»).
+    settings: dict = field(default_factory=dict)
 
 
 JOBS: dict[str, JobState] = {}
@@ -111,6 +115,24 @@ def _pick_master_from_files(files: dict) -> tuple[int, str, str]:
         raise HTTPException(409, "мастер видео не найдено")
     candidates.sort(reverse=True)
     return candidates[0]
+
+
+_PLATFORM_LABEL_RE = re.compile(r"^([a-z]+)-(\d+)p$")
+
+
+def _pick_master_for_platform(files: dict, platform: str) -> tuple[int, str, str]:
+    """Возвращает самый крупный platform-uniquified-вариант (например 'instagram-1056p'),
+    либо fallback на plain master если uniquify не запускался для этой платформы.
+    """
+    candidates: list[tuple[int, str, str]] = []
+    for label, fn in (files or {}).items():
+        m = _PLATFORM_LABEL_RE.match(label)
+        if m and m.group(1) == platform:
+            candidates.append((int(m.group(2)), label, fn))
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0]
+    return _pick_master_from_files(files)
 
 
 def _save_job_state(job: JobState) -> None:
@@ -201,9 +223,503 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="stati
 (BRAND_DIR / "_assets").mkdir(parents=True, exist_ok=True)
 app.mount("/brand-assets", StaticFiles(directory=str(BRAND_DIR / "_assets")), name="brand-assets")
 
+# === Контент-план & Суфлёр (новые разделы) ===
+CONTENT_DATA = ROOT / "content_data"
+_TP_STATE: dict[str, dict] = {}  # in-memory state для синка Mac↔iPhone суфлёра
+import threading as _threading
+_TP_LOCK = _threading.Lock()
+
+
+@app.get("/api/content-plan/videos")
+async def content_videos():
+    """Возвращает categorized.json с видео и метаданными."""
+    p = CONTENT_DATA / "categorized.json"
+    if not p.exists():
+        return {"error": "no data", "videos": []}
+    return json.loads(p.read_text())
+
+
+@app.get("/api/content-plan/rewrites")
+async def content_rewrites():
+    """Возвращает rewrites.json — массивы версий рерайтов под продукты."""
+    p = CONTENT_DATA / "rewrites.json"
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text())
+
+
+@app.get("/api/content-plan/transcript/{video_id}")
+async def content_transcript(video_id: str):
+    """Возвращает транскрипцию конкретного шортса (если есть)."""
+    p = CONTENT_DATA / "transcripts" / f"{video_id}.json"
+    if not p.exists():
+        return {"text": ""}
+    return json.loads(p.read_text())
+
+
+@app.get("/api/teleprompter/state")
+async def tp_state_get(room: str = "default"):
+    """Slave-клиент (iPhone) тянет состояние прокрутки/текста."""
+    with _TP_LOCK:
+        return _TP_STATE.get(room, {})
+
+
+from fastapi import Body
+
+
+@app.post("/api/teleprompter/state")
+async def tp_state_post(room: str = "default", payload: dict = Body(...)):
+    """Master-клиент (Mac) пушит состояние."""
+    import time as _time
+    with _TP_LOCK:
+        cur = _TP_STATE.get(room, {})
+        cur.update(payload)
+        cur["ts"] = _time.time()
+        _TP_STATE[room] = cur
+    return {"ok": True}
+
+
+from web.content_plan_jobs import IMPORT_JOB, run_import
+
+# === Telepromter recording pipeline ===
+from src.pipeline_record import RECORD_JOBS, process_record, RecordOptions
+import uuid as _uuid
+
+RECORD_JOBS_DIR = ROOT / "jobs" / "teleprompter"
+RECORD_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+TAKES_DIR = ROOT / "jobs" / "takes"
+TAKES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.post("/api/teleprompter/takes")
+async def take_upload(
+    video: UploadFile = File(...),
+    script: str = Form(""),
+    video_id: str = Form(""),
+    version_idx: int = Form(0),
+    duration: float = Form(0),
+):
+    """Сохраняет дубль на диск сразу после записи. Без обработки."""
+    take_id = _uuid.uuid4().hex[:12]
+    take_dir = TAKES_DIR / take_id
+    take_dir.mkdir(parents=True, exist_ok=True)
+    ext = ".mp4" if (video.filename or "").endswith(".mp4") else ".webm"
+    path = take_dir / f"video{ext}"
+    with path.open("wb") as f:
+        while chunk := await video.read(1024 * 1024):
+            f.write(chunk)
+    meta = {
+        "id": take_id,
+        "video_id": video_id,
+        "version_idx": version_idx,
+        "script": script,
+        "duration": duration,
+        "filename": path.name,
+        "size_kb": path.stat().st_size // 1024,
+        "created_at": __import__("time").time(),
+    }
+    (take_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+    return {"ok": True, "take": meta}
+
+
+@app.get("/api/teleprompter/takes")
+async def takes_list(video_id: str = ""):
+    """Список всех дублей; опц. фильтр по video_id оригинала."""
+    items = []
+    for d in TAKES_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        m = d / "meta.json"
+        if not m.exists():
+            continue
+        try:
+            meta = json.loads(m.read_text())
+            if video_id and meta.get("video_id") != video_id:
+                continue
+            items.append(meta)
+        except Exception:
+            continue
+    items.sort(key=lambda x: -x.get("created_at", 0))
+    return {"takes": items}
+
+
+def _safe_id(s: str) -> bool:
+    """Защита от path traversal: take_id/job_id из URL не должны содержать
+    '..' или '/'. shutil.rmtree(TAKES_DIR/'..') стёр бы родительский jobs/."""
+    return bool(s) and ".." not in s and "/" not in s and "\\" not in s
+
+
+@app.get("/api/teleprompter/takes/{take_id}/video")
+async def take_video(take_id: str):
+    if not _safe_id(take_id):
+        raise HTTPException(400)
+    d = TAKES_DIR / take_id
+    m = d / "meta.json"
+    if not m.exists():
+        return {"error": "not found"}
+    meta = json.loads(m.read_text())
+    path = d / meta["filename"]
+    if not path.exists():
+        return {"error": "file gone"}
+    return FileResponse(path, media_type="video/mp4" if path.suffix == ".mp4" else "video/webm")
+
+
+@app.delete("/api/teleprompter/takes/{take_id}")
+async def take_delete(take_id: str):
+    if not _safe_id(take_id):
+        raise HTTPException(400)
+    d = TAKES_DIR / take_id
+    if d.exists():
+        import shutil as _sh
+        _sh.rmtree(d)
+    return {"ok": True}
+
+
+@app.post("/api/teleprompter/takes/{take_id}/process")
+async def take_process(take_id: str, payload: dict = Body(...)):
+    """Запускает обработку существующего дубля (берёт video и script из meta)."""
+    if not _safe_id(take_id):
+        raise HTTPException(400)
+    d = TAKES_DIR / take_id
+    m = d / "meta.json"
+    if not m.exists():
+        return {"ok": False, "error": "take not found"}
+    meta = json.loads(m.read_text())
+    src_path = d / meta["filename"]
+    if not src_path.exists():
+        return {"ok": False, "error": "video gone"}
+
+    job_id = _uuid.uuid4().hex[:12]
+    work = RECORD_JOBS_DIR / job_id
+    work.mkdir(parents=True, exist_ok=True)
+    # копируем во work dir, чтобы pipeline_record писал туда же
+    job_src = work / f"src{src_path.suffix}"
+    import shutil as _sh
+    _sh.copy2(src_path, job_src)
+
+    opts = RecordOptions(
+        auto_cut=payload.get("auto_cut", True),
+        subtitles=payload.get("subtitles", True),
+        brand=payload.get("brand", "excella"),
+        apply_brand=payload.get("apply_brand", True),
+        apply_watermark=payload.get("apply_watermark", True),
+        apply_face=payload.get("apply_face", True),
+        apply_bottom_strip=payload.get("apply_bottom_strip", True),
+        cta_key=payload.get("cta_key", ""),
+        effects=payload.get("effects", False),
+        effects_zoom=payload.get("effects_zoom", True),
+        effects_emoji=payload.get("effects_emoji", True),
+        effects_hook=payload.get("effects_hook", False),
+        effects_sfx=payload.get("effects_sfx", False),
+        subtitle_template=payload.get("subtitle_template", "block"),
+        meta_title=payload.get("meta_title", ""),
+        meta_description=payload.get("meta_description", ""),
+        meta_tags=payload.get("meta_tags", []) or [],
+    )
+    asyncio.create_task(process_record(
+        video_path=job_src, script=meta.get("script", ""), options=opts,
+        jobs_dir=RECORD_JOBS_DIR, job_id=job_id
+    ))
+    return {"ok": True, "job_id": job_id, "take": meta}
+
+
+def _scan_record_jobs_on_disk():
+    """Восстанавливает RECORD_JOBS из существующих папок jobs/teleprompter/<id>/
+    с финальными файлами — чтобы превью работало после рестарта сервера."""
+    for d in RECORD_JOBS_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        jid = d.name
+        if jid in RECORD_JOBS:
+            continue
+        final = None
+        for name in ("with_subs.mp4", "cut.mp4"):
+            p = d / name
+            if p.exists():
+                final = p
+                break
+        if not final:
+            continue
+        RECORD_JOBS[jid] = {
+            "id": jid,
+            "status": "done",
+            "step": "Готово (восстановлено с диска)",
+            "progress": 100,
+            "log": [],
+            "result": {
+                "final_path": str(final),
+                "filename": final.name,
+                "size_kb": final.stat().st_size // 1024,
+                "ranges": [],
+                "coverage": 0.0,
+            },
+            "started_at": final.stat().st_mtime,
+            "finished_at": final.stat().st_mtime,
+        }
+
+
+_scan_record_jobs_on_disk()
+
+
+@app.post("/api/teleprompter/upload")
+async def tp_upload(
+    video: UploadFile = File(...),
+    script: str = Form(""),
+    auto_cut: bool = Form(True),
+    subtitles: bool = Form(True),
+    brand: str = Form("excella"),
+    apply_brand: bool = Form(True),
+    apply_watermark: bool = Form(True),
+    apply_face: bool = Form(True),
+    apply_bottom_strip: bool = Form(True),
+    cta_key: str = Form(""),
+    effects: bool = Form(False),
+    effects_zoom: bool = Form(True),
+    effects_emoji: bool = Form(True),
+    effects_hook: bool = Form(False),
+    effects_sfx: bool = Form(False),
+    subtitle_template: str = Form("block"),
+    meta_title: str = Form(""),
+    meta_description: str = Form(""),
+    meta_tags: str = Form(""),  # comma-separated
+):
+    """Принимает видео-blob от teleprompter, запускает обработку."""
+    job_id = _uuid.uuid4().hex[:12]
+    work = RECORD_JOBS_DIR / job_id
+    work.mkdir(parents=True, exist_ok=True)
+    # сохраняем upload
+    ext = ".mp4" if video.filename and video.filename.endswith(".mp4") else ".webm"
+    src = work / f"src{ext}"
+    with src.open("wb") as f:
+        while chunk := await video.read(1024 * 1024):
+            f.write(chunk)
+
+    # meta_tags принимаем и через пробел и через запятую
+    meta_tags_list = re.split(r"[,\s]+", meta_tags.strip()) if meta_tags else []
+    meta_tags_list = [t.strip() for t in meta_tags_list if t.strip()]
+    opts = RecordOptions(
+        auto_cut=auto_cut, subtitles=subtitles,
+        brand=brand, apply_brand=apply_brand, cta_key=cta_key,
+        apply_watermark=apply_watermark, apply_face=apply_face, apply_bottom_strip=apply_bottom_strip,
+        effects=effects, effects_zoom=effects_zoom, effects_emoji=effects_emoji,
+        effects_hook=effects_hook, effects_sfx=effects_sfx,
+        subtitle_template=subtitle_template,
+        meta_title=meta_title, meta_description=meta_description, meta_tags=meta_tags_list,
+    )
+    asyncio.create_task(process_record(
+        video_path=src, script=script, options=opts,
+        jobs_dir=RECORD_JOBS_DIR, job_id=job_id
+    ))
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/api/teleprompter/jobs")
+async def tp_jobs_list():
+    """Список всех job'ов, новые сверху."""
+    items = sorted(RECORD_JOBS.values(), key=lambda j: -j.get("started_at", 0))
+    return {"jobs": [{"id": j["id"], "status": j["status"], "progress": j["progress"], "step": j.get("step",""), "started_at": j.get("started_at",0)} for j in items]}
+
+
+@app.get("/api/teleprompter/jobs/{job_id}")
+async def tp_job_status(job_id: str):
+    job = RECORD_JOBS.get(job_id)
+    if not job:
+        return {"error": "job not found"}
+    return job
+
+
+@app.get("/api/teleprompter/jobs/{job_id}/preview")
+async def tp_job_preview(job_id: str):
+    """Стримит финальное видео для предпросмотра."""
+    job = RECORD_JOBS.get(job_id)
+    if not job or job.get("status") != "done":
+        return {"error": "not ready"}
+    path = Path(job["result"]["final_path"])
+    if not path.exists():
+        return {"error": "file gone"}
+    return FileResponse(path, media_type="video/mp4")
+
+
+@app.post("/api/seo/generate")
+async def seo_generate(payload: dict = Body(...)):
+    """Генерация SEO-упаковки (title/description/tags/hashtags) под скрипт.
+    Используется и в Telepromter и в Studio."""
+    try:
+        from src.seo import generate_seo
+        seo = await asyncio.to_thread(
+            generate_seo,
+            script=payload.get("script", ""),
+            niche=payload.get("niche", ""),
+            product=payload.get("product", ""),
+            brand=payload.get("brand", ""),
+            lead_url=payload.get("lead_url", ""),
+            provider_name=payload.get("provider", "anthropic"),
+            model=payload.get("model"),
+        )
+        return {"ok": True, "seo": seo.to_dict()}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.get("/api/brands")
+async def brands_list():
+    """Список всех брендов с краткой инфой для UI."""
+    try:
+        from src.branding import list_brands, load_brand
+        out = []
+        for name in list_brands():
+            try:
+                tpl = load_brand(name)
+                cta_presets = list((tpl.cta_presets or {}).keys()) if hasattr(tpl, "cta_presets") else []
+                wm = getattr(tpl, "watermark_path", None)
+                face = getattr(tpl, "face_overlay_path", None)
+                out.append({
+                    "name": name,
+                    "lead_url": getattr(tpl, "lead_url", ""),
+                    "niche": getattr(tpl, "niche", ""),
+                    "watermark_url": (f"/brand-assets/{Path(wm).name}" if wm else None),
+                    "face_overlay_url": (f"/brand-assets/{Path(face).name}" if face else None),
+                    "cta_presets": cta_presets,
+                    "bottom_strip_text": (tpl.bottom_strip.text if getattr(tpl, "bottom_strip", None) else ""),
+                })
+            except Exception as e:
+                out.append({"name": name, "error": str(e)})
+        return {"brands": out}
+    except Exception as e:
+        return {"brands": [], "error": str(e)}
+
+
+@app.get("/api/teleprompter/publish/status")
+async def tp_publish_status(brand: str = "excella"):
+    """YouTube OAuth status для бренда."""
+    try:
+        from src.publish.youtube import get_status
+        s = get_status(brand)
+        return {
+            "connected": s.connected,
+            "has_client_secrets": s.has_client_secrets,
+            "channel_title": s.channel_title,
+        }
+    except Exception as e:
+        return {"error": str(e), "connected": False}
+
+
+@app.post("/api/teleprompter/publish/{job_id}")
+async def tp_publish(job_id: str, payload: dict = Body(...)):
+    """Зашивает SEO-meta в MP4 и публикует обработанный шортс на YouTube."""
+    job = RECORD_JOBS.get(job_id)
+    if not job or job.get("status") != "done":
+        return {"ok": False, "error": "job not ready"}
+    title = payload.get("title", "Без названия")
+    description = payload.get("description", "")
+    tags = payload.get("tags", []) or []
+    brand = payload.get("brand", "excella")
+    try:
+        # 1. Зашиваем metadata прямо в финальный mp4 (Google/YouTube читают это)
+        from src.seo import stamp_metadata, SEOData
+        src_path = Path(job["result"]["final_path"])
+        stamped_path = src_path.with_name(src_path.stem + "_seo.mp4")
+        seo = SEOData(title=title, description=description, tags=tags)
+        await asyncio.to_thread(stamp_metadata, src_path, stamped_path, seo=seo, artist=brand)
+        # 2. Аплоадим уже с зашитыми тегами
+        from src.publish.youtube import upload_video
+        result = await asyncio.to_thread(
+            upload_video,
+            brand=brand,
+            video_path=stamped_path,
+            title=title,
+            description=description,
+            tags=tags,
+            privacy=payload.get("privacy", "private"),
+        )
+        return {"ok": True, **result}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/content-plan/import")
+async def content_import_start(payload: dict = Body(...)):
+    """Запуск импорта канала в фоне. payload: {url, top_n, fetch_transcripts, generate_rewrites, products, persona, provider, model}"""
+    if IMPORT_JOB.get("status") == "running":
+        return {"ok": False, "error": "Импорт уже запущен"}
+    url = (payload.get("url") or "").strip()
+    if not url:
+        return {"ok": False, "error": "URL канала пустой"}
+    asyncio.create_task(run_import(
+        channel_url=url,
+        content_data=CONTENT_DATA,
+        top_n=int(payload.get("top_n", 200)),
+        fetch_transcripts=bool(payload.get("fetch_transcripts", True)),
+        whisper_fallback=bool(payload.get("whisper_fallback", False)),
+        generate_rewrites=bool(payload.get("generate_rewrites", False)),
+        products=payload.get("products") or [],
+        topics=payload.get("topics") or [],
+        persona=payload.get("persona") or "",
+        provider=payload.get("provider") or "anthropic",
+        model=payload.get("model"),
+    ))
+    return {"ok": True}
+
+
+@app.get("/api/content-plan/import/status")
+async def content_import_status():
+    """Текущий статус импорта (polling каждую секунду из UI)."""
+    return IMPORT_JOB
+
+
+@app.get("/api/content-plan/import/providers")
+async def content_import_providers():
+    """Список доступных LLM-провайдеров для выпадашки."""
+    try:
+        from src.llm.registry import list_providers_status
+        return {"providers": list_providers_status()}
+    except Exception as e:
+        return {"providers": [], "error": str(e)}
+
+
+@app.get("/api/network/ip")
+async def network_ip():
+    """Локальный IP Mac — для QR кода iPhone-suффлёра."""
+    import socket as _socket
+    ip = "127.0.0.1"
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        candidate = s.getsockname()[0]
+        s.close()
+        if not candidate.startswith("169.254.") and not candidate.startswith("127."):
+            ip = candidate
+    except Exception:
+        pass
+    if ip == "127.0.0.1":
+        try:
+            import subprocess as _sp
+            out = _sp.check_output(["ifconfig"], text=True)
+            for line in out.split("\n"):
+                line = line.strip()
+                if line.startswith("inet ") and "127." not in line and "169.254." not in line:
+                    cand = line.split()[1]
+                    if cand.startswith("192.168.") or cand.startswith("10.") or cand.startswith("172."):
+                        ip = cand
+                        break
+        except Exception:
+            pass
+    return {"ip": ip, "port": 8000}
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
+    return HTMLResponse((WEB_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+# ⭐ alias `/shorts-cutter[/]` — для деплоя на excella.ru/shorts-cutter,
+# когда nginx форвардит этот префикс в backend без strip'а.
+# Все asset-пути в index.html абсолютные (/preview/...), поэтому
+# работают независимо от URL — нужен только сам HTML по этому пути.
+@app.get("/shorts-cutter", response_class=HTMLResponse)
+@app.get("/shorts-cutter/", response_class=HTMLResponse)
+async def shorts_cutter_index() -> HTMLResponse:
     return HTMLResponse((WEB_DIR / "index.html").read_text(encoding="utf-8"))
 
 
@@ -293,6 +809,17 @@ async def subtitle_templates():
     ]
 
 
+@app.get("/subtitle-templates/{key}/preview-style")
+async def subtitle_preview_style(key: str, target_h: int = 1920):
+    """CSS-ready JSON для WYSIWYG-превью. Выводится из того же SubTemplate,
+    что используется в write_ass — превью гарантированно совпадает с burn'ом.
+    """
+    from src.sub_style import template_to_web_style
+    if key not in SUB_PRESETS:
+        raise HTTPException(404, f"стиль {key} не найден")
+    return template_to_web_style(SUB_PRESETS[key], target_h=target_h)
+
+
 _SUB_STYLES_OVERRIDES = BRAND_DIR / "_subtitle_overrides.json"
 
 
@@ -329,7 +856,11 @@ def _apply_sub_overrides() -> None:
 # появиться custom-стили, и distinguish'ить будет сложнее).
 # Так же сохраняем deep-copy дефолтов чтобы reset реально возвращал к коду, а не к
 # уже мутированному объекту.
-_BUILTIN_SUB_KEYS = {"karaoke", "block", "minimal", "neon", "telegram", "big_white"}
+_BUILTIN_SUB_KEYS = {
+    "karaoke", "block", "minimal", "neon", "telegram", "big_white",
+    "submagic", "captions", "podcast_pro",
+    "beast", "karaoke_fill", "highlight_box", "bubble", "chroma",
+}
 import copy as _copy
 _ORIGINAL_DEFAULTS = {k: _copy.deepcopy(SUB_PRESETS[k]) for k in _BUILTIN_SUB_KEYS if k in SUB_PRESETS}
 _apply_sub_overrides()
@@ -341,9 +872,13 @@ class SubTemplatePatch(BaseModel):
     font: Optional[str] = None
     size: Optional[int] = None
     bold: Optional[bool] = None
+    italic: Optional[bool] = None
     color: Optional[str] = None
     highlight: Optional[str] = None
     outline_color: Optional[str] = None
+    back_color: Optional[str] = None
+    back_alpha: Optional[int] = None
+    border_style: Optional[int] = None
     outline: Optional[int] = None
     shadow: Optional[int] = None
     margin_v: Optional[int] = None
@@ -353,6 +888,12 @@ class SubTemplatePatch(BaseModel):
     use_highlight: Optional[bool] = None
     min_chunk_duration: Optional[float] = None
     highlight_scale: Optional[int] = None
+    uppercase: Optional[bool] = None
+    pop_in: Optional[bool] = None
+    accent_color: Optional[str] = None
+    accent_scale: Optional[int] = None
+    letter_spacing: Optional[int] = None
+    progressive_fill: Optional[bool] = None
 
 
 @app.patch("/subtitle-templates/{key}")
@@ -739,6 +1280,63 @@ async def elevenlabs_check():
     }
 
 
+@app.post("/jobs/{job_id}/retry")
+async def retry_failed_job(job_id: str, delete_old: bool = True):
+    """Перезапускает упавший job с той же source_url (без формы).
+
+    Полезно когда падает на pick/meta из-за временных API-ошибок (LLM 404,
+    rate limits, network). Создаёт НОВЫЙ job_id с дефолтами, возвращает его.
+    Старый удаляется по умолчанию (delete_old=true), либо остаётся как archive.
+    """
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "job не найден")
+    if job.status not in ("error", "done"):
+        raise HTTPException(400, f"нельзя retry job в статусе {job.status}")
+    if not job.source_url:
+        raise HTTPException(400, "у job нет source_url — retry невозможен (был файл-upload)")
+
+    src_url = job.source_url
+    # ⭐ Сохраняем оригинальные настройки чтобы retry воспроизводил тот же запуск.
+    saved_settings = dict(job.settings or {})
+
+    if delete_old:
+        try:
+            await delete_job(job_id)  # type: ignore[name-defined]
+        except Exception:
+            pass
+
+    import time as _t
+    new_job_id = uuid.uuid4().hex[:12]
+    new_job = JobState(
+        id=new_job_id, source_url=src_url, title="",
+        created_at=_t.time(), settings=saved_settings,
+    )
+    JOBS[new_job_id] = new_job
+    QUEUES[new_job_id] = asyncio.Queue()
+    new_job_dir = WORK_DIR / new_job_id
+    new_out_dir = new_job_dir / "output"
+    new_dl_dir = new_job_dir / "downloads"
+    new_out_dir.mkdir(parents=True)
+    new_dl_dir.mkdir(parents=True)
+
+    s = saved_settings  # alias
+    asyncio.create_task(_run_job(
+        new_job_id, src_url, None, new_out_dir, new_dl_dir,
+        s.get("max_clips", 8), s.get("whisper_model", "medium"),
+        s.get("sub_template", "block"), s.get("brand", "excella"), s.get("cta", "demo"),
+        s.get("llm_provider", ""), s.get("llm_model", ""),
+        s.get("download_max_height", 1080), s.get("download_cookies_browser", ""),
+        s.get("output_size", "native"),
+        s.get("voiceover", False), s.get("voiceover_engine", "library"),
+        s.get("voiceover_mode", "duck"),
+        s.get("voiceover_voice", "EXAVITQu4vr4xnSDxMaL"),
+        s.get("voiceover_model", "eleven_v3"), s.get("voiceover_target_lang", "ru"),
+        s.get("picker_extra", ""),
+    ))
+    return {"ok": True, "job_id": new_job_id, "source_url": src_url}
+
+
 @app.post("/jobs")
 async def create_job(
     url: Optional[str] = Form(None),
@@ -764,8 +1362,33 @@ async def create_job(
     if not url and not file:
         raise HTTPException(400, "Нужен URL или файл")
 
+    import time as _t
     job_id = uuid.uuid4().hex[:12]
-    job = JobState(id=job_id, source_url=url or "", title=(file.filename if file else "") or "")
+    job = JobState(
+        id=job_id, source_url=url or "",
+        title=(file.filename if file else "") or "",
+        created_at=_t.time(),
+        settings={
+            "url": url or "",
+            "max_clips": max_clips,
+            "whisper_model": whisper_model,
+            "sub_template": sub_template,
+            "brand": brand,
+            "cta": cta,
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
+            "download_max_height": download_max_height,
+            "download_cookies_browser": download_cookies_browser,
+            "output_size": output_size,
+            "voiceover": voiceover,
+            "voiceover_engine": voiceover_engine,
+            "voiceover_mode": voiceover_mode,
+            "voiceover_voice": voiceover_voice,
+            "voiceover_model": voiceover_model,
+            "voiceover_target_lang": voiceover_target_lang,
+            "picker_extra": picker_extra,
+        },
+    )
     JOBS[job_id] = job
     QUEUES[job_id] = asyncio.Queue()
 
@@ -899,9 +1522,19 @@ async def _run_job_inner(
 
 @app.get("/jobs")
 async def list_jobs(limit: int = 30):
-    """Список всех job'ов (новые сверху). Используется для UI «Последние задания»."""
+    """Список всех job'ов с timestamps. Клиент сам сортирует.
+
+    `created_at` — из JobState если есть, иначе mtime файла state.json (для legacy
+    job'ов до добавления поля). По убыванию = новые сверху.
+    """
     items = []
     for jid, job in JOBS.items():
+        created_at = job.created_at
+        if not created_at:
+            state_path = WORK_DIR / jid / "state.json"
+            if state_path.exists():
+                try: created_at = state_path.stat().st_mtime
+                except Exception: created_at = 0.0
         items.append({
             "id": jid,
             "status": job.status,
@@ -911,9 +1544,10 @@ async def list_jobs(limit: int = 30):
             "title": job.title or job.source_url[:60] or jid,
             "source_url": job.source_url,
             "error": job.error,
+            "created_at": created_at,
         })
-    # сортируем по времени появления в JOBS (последние сверху)
-    items.reverse()
+    # дефолт: новые сверху по created_at
+    items.sort(key=lambda x: -(x.get("created_at") or 0))
     return items[:limit]
 
 
@@ -1029,7 +1663,8 @@ async def yt_publish_clip(job_id: str, clip_index: int, req: YTUploadRequest):
     description = (clip.get("meta_descriptions") or {}).get(plat, "")
     tags = (clip.get("meta_hashtags") or {}).get(plat, [])
 
-    video_path = WORK_DIR / job_id / "output" / _pick_master_from_files(clip["files"])[2]
+    # ⭐ Если уникализация для youtube сгенерирована — берём её. Иначе fallback на master.
+    video_path = WORK_DIR / job_id / "output" / _pick_master_for_platform(clip["files"], "youtube")[2]
     if not video_path.exists():
         raise HTTPException(409, "видео не найдено")
 
@@ -1101,7 +1736,8 @@ async def vk_publish_clip(job_id: str, clip_index: int, req: VKUploadRequest):
     if tags:
         description = description.rstrip() + "\n\n" + " ".join(tags)
 
-    video_path = WORK_DIR / job_id / "output" / _pick_master_from_files(clip["files"])[2]
+    # ⭐ Используем vk-uniquified-вариант если есть
+    video_path = WORK_DIR / job_id / "output" / _pick_master_for_platform(clip["files"], "vk")[2]
     if not video_path.exists():
         raise HTTPException(409, "видео не найдено")
 
@@ -1188,7 +1824,8 @@ async def ig_publish_clip(job_id: str, clip_index: int, req: IGUploadRequest):
                 "Instagram требует публичный URL видео. Укажи public_base_url в настройках "
                 "бренда (например через cloudflared/ngrok тоннель).",
             )
-        filename = _pick_master_from_files(clip["files"])[2]
+        # ⭐ Используем instagram-uniquified-вариант если есть
+        filename = _pick_master_for_platform(clip["files"], "instagram")[2]
         video_url = f"{base.rstrip('/')}/clips/{job_id}/{filename}"
 
     try:
@@ -1274,7 +1911,280 @@ async def generate_thumbnails(job_id: str, clip_index: int):
     )
     rel = [str(p.relative_to(out_dir)) for p in paths]
     clip["thumbnails"] = rel
-    return {"thumbnails": rel}
+    return {"thumbnails": rel, "chosen_thumbnail": clip.get("chosen_thumbnail")}
+
+
+class ChosenThumbnail(BaseModel):
+    thumbnail: str  # rel path под output/, например "thumbs/<slug>/1.jpg"
+
+
+@app.patch("/jobs/{job_id}/clips/{clip_index}/chosen-thumbnail")
+async def set_chosen_thumbnail(job_id: str, clip_index: int, req: ChosenThumbnail):
+    """Сохраняет выбранную пользователем превью-картинку как cover для публикаций."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip = job.clips[clip_index - 1]
+    # Sanity-check: путь должен быть в списке сгенерированных
+    if req.thumbnail not in (clip.get("thumbnails") or []):
+        raise HTTPException(400, "thumbnail не из списка сгенерированных")
+    clip["chosen_thumbnail"] = req.thumbnail
+    return {"ok": True, "chosen_thumbnail": req.thumbnail}
+
+
+class CoverRequest(BaseModel):
+    hook_text: Optional[str] = None  # None → берём clip["meta_title"] или clip["title"]
+    text_position: str = "top"        # "top" | "center" | "bottom"
+    target_w: int = 1080
+    target_h: int = 1920
+
+
+@app.post("/jobs/{job_id}/clips/{clip_index}/cover")
+async def generate_cover(job_id: str, clip_index: int, req: CoverRequest):
+    """Накладывает hook-текст на выбранный thumbnail → cover.png.
+    Если chosen_thumbnail не выбран, берёт первый из сгенерированных."""
+    from src.cover import render_cover
+    from src.branding import load_brand
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip = job.clips[clip_index - 1]
+    out_dir = WORK_DIR / job_id / "output"
+    thumbs = clip.get("thumbnails") or []
+    chosen = clip.get("chosen_thumbnail") or (thumbs[0] if thumbs else None)
+    if not chosen:
+        raise HTTPException(409, "сначала сгенерируй превью-кадры")
+    src_thumb = out_dir / chosen
+    if not src_thumb.exists():
+        raise HTTPException(409, f"thumbnail не найден: {chosen}")
+    brand = load_brand(clip.get("brand", "excella"))
+    hook = (req.hook_text or clip.get("meta_title") or clip.get("title") or "").strip()
+    cover_path = out_dir / "covers" / f"{clip.get('slug', clip_index)}.png"
+    try:
+        await asyncio.to_thread(
+            render_cover, src_thumb, hook, brand, cover_path,
+            target_w=req.target_w, target_h=req.target_h,
+            text_position=req.text_position,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"cover render failed: {e}")
+    rel = str(cover_path.relative_to(out_dir))
+    clip["cover_image"] = rel
+    clip["cover_hook"] = hook
+    _save_job_state(job)
+    return {"ok": True, "cover_image": rel, "hook_text": hook}
+
+
+@app.get("/jobs/{job_id}/clips/{clip_index}/cover.png")
+async def get_cover(job_id: str, clip_index: int):
+    """Отдаёт сгенерированный cover.png. Если ещё не создан — 404."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip = job.clips[clip_index - 1]
+    rel = clip.get("cover_image")
+    if not rel:
+        raise HTTPException(404, "cover не сгенерирован")
+    p = WORK_DIR / job_id / "output" / rel
+    if not p.exists():
+        raise HTTPException(404, "файл не найден на диске")
+    return FileResponse(str(p), media_type="image/png")
+
+
+class TranslateRequest(BaseModel):
+    target_langs: list[str]              # ["en", "pt-br", "es", ...]
+    source_lang: str = "ru"
+    provider: Optional[str] = None       # None → default
+    model: Optional[str] = None
+
+
+@app.post("/jobs/{job_id}/clips/{clip_index}/translate")
+async def translate_clip(job_id: str, clip_index: int, req: TranslateRequest):
+    """Переводит субтитры клипа на целевые языки и ре-burn'ит master.
+
+    Использует кешированный silent.mp4 (без аудио, без субтитров) — НЕ
+    запускает smart-reframe заново. Только новый ASS + mux + brand.
+    Результаты в clip["translations"][lang] = {ass, files}.
+    """
+    from src.subtitles_translate import translate_segments, SUPPORTED_LANGS
+    from src.subtitles import write_ass
+    from src.render import RESOLUTIONS, mux_audio_and_subs, transcode, pick_master_size
+    from src.branding import load_brand, apply_brand
+    from src.transcribe import Segment, Word
+    from src.pipeline import slugify
+    import pickle
+
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip_data = job.clips[clip_index - 1]
+
+    bad = [l for l in req.target_langs if l.lower() not in SUPPORTED_LANGS]
+    if bad:
+        raise HTTPException(400, f"неподдерживаемые языки: {bad}. поддерживаются: {list(SUPPORTED_LANGS)}")
+
+    job_dir = WORK_DIR / job_id
+    out_dir = job_dir / "output"
+    cache_dir = out_dir / "_cache"
+    dl_dir = job_dir / "downloads"
+    src_path = dl_dir / clip_data.get("src_basename", "")
+    if not src_path.exists():
+        raise HTTPException(409, "исходник не найден")
+
+    slug = clip_data.get("slug") or f"{clip_index:02d}-{slugify(clip_data['title'])}"
+    silent = cache_dir / f"{slug}.silent.mp4"
+    if not silent.exists():
+        raise HTTPException(409, "silent.mp4 кеш отсутствует — нужен повторный прогон клипа")
+
+    segments_path = job_dir / "segments.json"
+    if not segments_path.exists():
+        raise HTTPException(409, "segments.json отсутствует")
+    seg_raw = json.loads(segments_path.read_text())
+    full_segments = [
+        Segment(s["start"], s["end"], s["text"],
+                [Word(w["start"], w["end"], w["text"]) for w in s.get("words", [])])
+        for s in seg_raw
+    ]
+    cs, ce = clip_data["start"], clip_data["end"]
+    clip_segments = [s for s in full_segments if s.end > cs and s.start < ce]
+
+    analysis_path = job_dir / "analysis.pkl"
+    if analysis_path.exists():
+        analysis = pickle.loads(analysis_path.read_bytes())
+        m_w, m_h = pick_master_size(analysis.meta.src_w, analysis.meta.src_h, mode="native")
+    else:
+        m_w, m_h = 1080, 1920
+
+    brand_tpl = load_brand(clip_data.get("brand", "excella"))
+    cta_key = clip_data.get("cta", "demo")
+
+    translations = clip_data.setdefault("translations", {})
+    results = {}
+    for lang in req.target_langs:
+        lang_key = lang.lower()
+        # 1. translate
+        translated = await asyncio.to_thread(
+            translate_segments, clip_segments,
+            source_lang=req.source_lang, target_lang=lang_key,
+            provider=req.provider, model=req.model,
+        )
+        # 2. write ASS на новом языке
+        subs_path = cache_dir / f"{slug}.{lang_key}.ass"
+        write_ass(translated, cs, ce, subs_path,
+                  target_w=m_w, target_h=m_h,
+                  template=clip_data.get("sub_template", "block"))
+        # 3. mux silent + audio + subs
+        with_subs = out_dir / f"{slug}-{lang_key}.subs.mp4"
+        await asyncio.to_thread(
+            mux_audio_and_subs, silent, src_path, subs_path, cs, ce, with_subs,
+        )
+        # 4. apply brand → master_<lang>-1080p.mp4
+        master = out_dir / f"{slug}-{lang_key}-1080p.mp4"
+        try:
+            await asyncio.to_thread(apply_brand, with_subs, master, brand_tpl, cta_key=cta_key)
+            with_subs.unlink(missing_ok=True)
+        except Exception:
+            with_subs.replace(master)
+        # 5. transcode для других res
+        files = {"1080p": master.name}
+        for label, (w, h) in RESOLUTIONS.items():
+            if label == "1080p":
+                continue
+            variant = out_dir / f"{slug}-{lang_key}-{label}.mp4"
+            await asyncio.to_thread(transcode, master, variant, w, h)
+            files[label] = variant.name
+
+        translations[lang_key] = {
+            "ass": subs_path.name,
+            "files": files,
+        }
+        results[lang_key] = translations[lang_key]
+
+    _save_job_state(job)
+    return {"ok": True, "translations": results}
+
+
+class SFXRequest(BaseModel):
+    style: str = "subtle"                # "subtle" | "energetic"
+    enable_cuts: bool = True
+    enable_speech_onset: bool = True
+
+
+@app.post("/jobs/{job_id}/clips/{clip_index}/add-sfx")
+async def add_sfx_endpoint(job_id: str, clip_index: int, req: SFXRequest):
+    """Накладывает SFX-стинги на акценты (cuts + speech-onsets) → master_sfx.mp4.
+
+    Использует analysis.pkl для таймингов (без новой детекции). Видео не
+    перерендерится — только audio-track пересобирается через ffmpeg amix.
+    """
+    from src.sfx import compute_sfx_timings, add_sfx, STYLE_PRESETS
+    from src.render import RESOLUTIONS, transcode
+    from src.pipeline import slugify
+    import pickle
+
+    if req.style not in STYLE_PRESETS:
+        raise HTTPException(400, f"стиль не поддерживается: {req.style} (доступны: {list(STYLE_PRESETS)})")
+
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip_data = job.clips[clip_index - 1]
+
+    job_dir = WORK_DIR / job_id
+    out_dir = job_dir / "output"
+    analysis_path = job_dir / "analysis.pkl"
+    if not analysis_path.exists():
+        raise HTTPException(409, "analysis.pkl отсутствует")
+
+    slug = clip_data.get("slug") or f"{clip_index:02d}-{slugify(clip_data['title'])}"
+    src_master_name = (clip_data.get("files") or {}).get("1080p")
+    if not src_master_name:
+        raise HTTPException(409, "master 1080p не найден в state")
+    src_master = out_dir / src_master_name
+    if not src_master.exists():
+        raise HTTPException(409, f"файл master не найден: {src_master_name}")
+
+    analysis = pickle.loads(analysis_path.read_bytes())
+    cs, ce = clip_data["start"], clip_data["end"]
+    preset = STYLE_PRESETS[req.style]
+    timings = await asyncio.to_thread(
+        compute_sfx_timings, analysis, cs, ce,
+        enable_cuts=req.enable_cuts,
+        enable_speech_onset=req.enable_speech_onset,
+        min_gap_sec=preset["min_gap_sec"],
+    )
+
+    out_master = out_dir / f"{slug}-sfx-1080p.mp4"
+    try:
+        await asyncio.to_thread(add_sfx, src_master, out_master, timings, style=req.style)
+    except Exception as e:
+        raise HTTPException(500, f"add_sfx failed: {e}")
+
+    files = {"1080p": out_master.name}
+    for label, (w, h) in RESOLUTIONS.items():
+        if label == "1080p":
+            continue
+        variant = out_dir / f"{slug}-sfx-{label}.mp4"
+        await asyncio.to_thread(transcode, out_master, variant, w, h)
+        files[label] = variant.name
+
+    clip_data["sfx"] = {
+        "style": req.style,
+        "n_stings": len(timings),
+        "files": files,
+    }
+    _save_job_state(job)
+    return {"ok": True, "n_stings": len(timings), "files": files, "timings": timings}
 
 
 @app.get("/audio-library")
@@ -1451,8 +2361,13 @@ async def metrics_refresh(job_id: str):
 
 
 @app.get("/dashboard/all")
-async def dashboard_all():
-    """Сводка по всем job'ам: список клипов с публикациями + кешированные метрики."""
+async def dashboard_all(refresh: bool = False):
+    """Сводка по всем job'ам: список клипов с публикациями + метрики.
+
+    refresh=true — реально дёргает YouTube/VK API за свежей статистикой
+    (медленно, может занять минуту на много клипов). По умолчанию
+    отдаёт только кешированные данные.
+    """
     from src.publish import metrics as m_mod
     rows: list[dict] = []
     totals_per_clip: dict[int, dict] = {}
@@ -1460,6 +2375,18 @@ async def dashboard_all():
         for clip in job.clips:
             if not clip.get("publications"):
                 continue
+            if refresh:
+                try:
+                    fresh = await asyncio.to_thread(
+                        m_mod.fetch_clip_metrics, clip,
+                        clip.get("brand", "excella"),
+                    )
+                    if fresh:
+                        clip["metrics"] = fresh
+                except Exception as e:
+                    # одна платформа упала — не валим весь dashboard
+                    clip.setdefault("metrics", {})
+                    clip["metrics"]["_refresh_error"] = str(e)
             row = {
                 "job_id": job_id,
                 "clip_index": clip["index"],
@@ -1471,7 +2398,16 @@ async def dashboard_all():
             rows.append(row)
             totals_per_clip[len(rows)] = clip.get("metrics", {})
     agg = m_mod.aggregate_totals(totals_per_clip)
-    return {"rows": rows, **agg}
+    # ⭐ Плоские поля total_views/likes/comments чтобы фронт не лез внутрь totals.
+    # Совместимость: оставляем и totals и by_platform.
+    totals = agg.get("totals") or {}
+    return {
+        "rows": rows,
+        "total_views": totals.get("views", 0),
+        "total_likes": totals.get("likes", 0),
+        "total_comments": totals.get("comments", 0),
+        **agg,
+    }
 
 
 @app.get("/improvement/stats")
@@ -1489,16 +2425,118 @@ async def download_clip(job_id: str, filename: str):
     return FileResponse(path, media_type="video/mp4", filename=filename)
 
 
+@app.get("/jobs/{job_id}/clips/{clip_index}/nosubs")
+async def get_clip_nosubs_preview(job_id: str, clip_index: int):
+    """Видео клипа БЕЗ burned субтитров (для WYSIWYG-редактора). Берёт
+    кэшированный silent.mp4 (smart-reframe только) + audio из source.
+
+    Lazy-генерация: если nosubs.mp4 нет — создаём mux'ом silent + audio.
+    Кэш живёт в _cache/<slug>.nosubs.mp4 пока не обновится silent.mp4."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip = job.clips[clip_index - 1]
+    slug = clip.get("slug")
+    src_basename = clip.get("src_basename")
+    if not slug or not src_basename:
+        raise HTTPException(409, "клип создан старым кодом")
+    job_dir = WORK_DIR / job_id
+    silent = job_dir / "output" / "_cache" / f"{slug}.silent.mp4"
+    src_path = job_dir / "downloads" / src_basename
+    if not silent.exists() or not src_path.exists():
+        raise HTTPException(409, "нет silent.mp4 или source — нужен повторный прогон")
+
+    nosubs = job_dir / "output" / "_cache" / f"{slug}.nosubs.mp4"
+    # invalidate если silent новее
+    if not nosubs.exists() or nosubs.stat().st_mtime < silent.stat().st_mtime:
+        import subprocess as _sp
+        dur = clip["end"] - clip["start"]
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", str(silent),
+            "-ss", str(clip["start"]), "-t", f"{dur:.3f}", "-i", str(src_path),
+            "-map", "0:v:0", "-map", "1:a:0?",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+            "-movflags", "+faststart", "-shortest",
+            str(nosubs),
+        ]
+        ret = _sp.run(cmd, capture_output=True, text=True)
+        if ret.returncode != 0:
+            raise HTTPException(500, f"ffmpeg mux failed: {ret.stderr[:300]}")
+    return FileResponse(nosubs, media_type="video/mp4", filename=f"{slug}.nosubs.mp4")
+
+
 @app.get("/clips/{job_id}/thumbs/{rest:path}")
 async def download_thumbnail(job_id: str, rest: str):
+    if ".." in rest:
+        raise HTTPException(400)
     path = WORK_DIR / job_id / "output" / "thumbs" / rest
-    if ".." in rest or not path.exists():
+    # ⭐ Lazy-генерация постера 0.jpg / 0.png: если файла нет, пробуем
+    # извлечь первый кадр из клипа того же slug. Иначе UI спамит 404 в консоли
+    # для каждого <video poster=…> (постеры не генерируются по умолчанию).
+    if not path.exists() and rest.endswith(("/0.jpg", "/0.png")):
+        slug = rest.rsplit("/", 1)[0]
+        clips_dir = WORK_DIR / job_id / "output"
+        # ищем мастер-клип нужного slug — берём любой mp4 начинающийся со slug
+        candidates = list(clips_dir.glob(f"{slug}-*.mp4")) if slug else []
+        if candidates:
+            src_mp4 = candidates[0]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                import subprocess as _sp
+                _sp.run(
+                    ["ffmpeg", "-y", "-loglevel", "error",
+                     "-ss", "0.5", "-i", str(src_mp4),
+                     "-frames:v", "1", "-q:v", "4", str(path)],
+                    check=True, timeout=10,
+                )
+            except Exception:
+                pass
+    if not path.exists():
         raise HTTPException(404)
-    return FileResponse(path, media_type="image/png")
+    media = "image/jpeg" if rest.endswith(".jpg") else "image/png"
+    return FileResponse(path, media_type=media)
 
 
 class RestyleRequest(BaseModel):
     template: str
+    # ⭐ per-clip override полей шаблона. Если задано — write_ass получает SubTemplate
+    # = base(template) ∪ overrides. Базовый PRESETS[template] не меняется.
+    overrides: Optional[dict] = None
+
+
+class SubOverridesPatch(BaseModel):
+    # любое подмножество SubTemplate-полей. None значения отбрасываются.
+    name: Optional[str] = None
+    font: Optional[str] = None
+    size: Optional[int] = None
+    bold: Optional[bool] = None
+    italic: Optional[bool] = None
+    color: Optional[str] = None
+    highlight: Optional[str] = None
+    outline_color: Optional[str] = None
+    back_color: Optional[str] = None
+    back_alpha: Optional[int] = None
+    border_style: Optional[int] = None
+    outline: Optional[int] = None
+    shadow: Optional[int] = None
+    margin_v: Optional[int] = None
+    words_per_chunk: Optional[int] = None
+    chunk_advance: Optional[int] = None
+    max_chars_per_line: Optional[int] = None
+    use_highlight: Optional[bool] = None
+    highlight_scale: Optional[int] = None
+    uppercase: Optional[bool] = None
+    pop_in: Optional[bool] = None
+    accent_color: Optional[str] = None
+    accent_scale: Optional[int] = None
+    letter_spacing: Optional[int] = None
+    pill_bg: Optional[bool] = None
+    pill_radius_pct: Optional[int] = None
+    pill_padding_x: Optional[int] = None
+    pill_padding_y: Optional[int] = None
 
 
 class RegenMetaRequest(BaseModel):
@@ -1607,6 +2645,86 @@ async def get_clip_scenes(job_id: str, clip_index: int):
             "speaker_close", "active_speaker_close", "screen_full",
             "pip_speaker_screen", "wide_group", "wide_default", "split_screen",
         ],
+    }
+
+
+@app.get("/jobs/{job_id}/clips/{clip_index}/sub-style")
+async def get_clip_sub_style(job_id: str, clip_index: int, target_h: int = 1920):
+    """Сводный preview-style для клипа: base preset + per-clip overrides.
+
+    WYSIWYG-overlay фетчит этот эндпоинт после каждого изменения toolbar'а —
+    стиль обновляется в браузере моментально, без re-render'а финального файла.
+    """
+    from src.subtitles import SubTemplate
+    from src.sub_style import template_to_web_style
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip = job.clips[clip_index - 1]
+    template_key = clip.get("sub_template", "block")
+    if template_key not in SUB_PRESETS:
+        template_key = "block"
+    base = SUB_PRESETS[template_key]
+    overrides = clip.get("sub_overrides") or {}
+    if overrides:
+        cur = asdict(base)
+        cur.update({k: v for k, v in overrides.items() if v is not None})
+        try:
+            tpl = SubTemplate(**cur)
+        except TypeError:
+            tpl = base
+    else:
+        tpl = base
+    style = template_to_web_style(tpl, target_h=target_h)
+    style["templateKey"] = template_key
+    style["overrides"] = overrides
+    return style
+
+
+@app.get("/jobs/{job_id}/clips/{clip_index}/words")
+async def get_clip_words(job_id: str, clip_index: int):
+    """Whisper-слова с таймингом, сдвинутые в clip-relative time [0..clip_duration].
+
+    Используется WYSIWYG-overlay'ем субтитров в hero-cut модалке (timeupdate
+    listener подбирает текущий chunk и подсвечивает активное слово).
+    """
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    clip = job.clips[clip_index - 1]
+    cs, ce = clip["start"], clip["end"]
+
+    segments_path = WORK_DIR / job_id / "segments.json"
+    if not segments_path.exists():
+        raise HTTPException(409, "segments.json не найден — нужен повторный прогон")
+    raw = json.loads(segments_path.read_text())
+
+    words: list[dict] = []
+    for seg in raw:
+        if seg.get("end", 0) < cs or seg.get("start", 0) > ce:
+            continue
+        for w in seg.get("words", []):
+            ws = w.get("start", 0)
+            we = w.get("end", 0)
+            if we < cs or ws > ce:
+                continue
+            text = (w.get("text") or "").strip()
+            if not text:
+                continue
+            words.append({
+                "start": max(0.0, ws - cs),
+                "end": min(ce - cs, we - cs),
+                "text": text,
+            })
+
+    return {
+        "clip_start": cs, "clip_end": ce, "clip_duration": ce - cs,
+        "sub_template": clip.get("sub_template", "block"),
+        "words": words,
     }
 
 
@@ -1951,8 +3069,22 @@ async def restyle_clip(job_id: str, clip_index: int, req: RestyleRequest):
     except Exception:
         m_w, m_h = 1080, 1920
 
+    # ⭐ per-clip overrides — собираем SubTemplate из preset + правок пользователя
+    from src.subtitles import SubTemplate
+    base_preset = SUB_PRESETS[req.template]
+    merged_overrides = {**(clip_data.get("sub_overrides") or {}), **(req.overrides or {})}
+    if merged_overrides:
+        cur = asdict(base_preset)
+        cur.update({k: v for k, v in merged_overrides.items() if v is not None})
+        try:
+            sub_template = SubTemplate(**cur)
+        except TypeError:
+            sub_template = base_preset
+    else:
+        sub_template = base_preset
+
     write_ass(segments, clip_data["start"], clip_data["end"], subs_path,
-              target_w=m_w, target_h=m_h, template=req.template)
+              target_w=m_w, target_h=m_h, template=sub_template)
     await asyncio.to_thread(
         mux_audio_and_subs, silent, src_path, subs_path,
         clip_data["start"], clip_data["end"], master,
@@ -1972,7 +3104,71 @@ async def restyle_clip(job_id: str, clip_index: int, req: RestyleRequest):
     # обновляем in-memory job state
     clip_data["files"] = files
     clip_data["sub_template"] = req.template
+    if req.overrides is not None:
+        clip_data["sub_overrides"] = merged_overrides
     return {"ok": True, "clip": clip_data}
+
+
+class SubTemplateChange(BaseModel):
+    template: str
+
+
+@app.patch("/jobs/{job_id}/clips/{clip_index}/sub-template")
+async def patch_sub_template(job_id: str, clip_index: int, req: SubTemplateChange):
+    """Меняет sub_template клипа в state.json БЕЗ re-render'а. Overlay сразу
+    подхватывает новый template через /sub-style. Финальный burn — через /restyle."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404)
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404)
+    if req.template not in SUB_PRESETS:
+        raise HTTPException(400, f"неизвестный шаблон: {req.template}")
+    clip_data = job.clips[clip_index - 1]
+    clip_data["sub_template"] = req.template
+    return {"ok": True, "sub_template": req.template}
+
+
+@app.patch("/jobs/{job_id}/clips/{clip_index}/sub-overrides")
+async def patch_sub_overrides(job_id: str, clip_index: int, patch: SubOverridesPatch):
+    """Сохраняет per-clip override полей шаблона субтитров БЕЗ re-render'а.
+
+    Используется при редактировании в hero-cut toolbar'е: каждое изменение слайдера/
+    цвета сразу же сохраняется тут, overlay подхватывает новое значение через
+    preview-style endpoint. Финальный re-render (с burn'ом) запускается через
+    /restyle когда пользователь нажимает Apply.
+    """
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "job не найден")
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404, "клип не найден")
+    clip_data = job.clips[clip_index - 1]
+    upd = {k: v for k, v in patch.dict().items() if v is not None}
+    cur = clip_data.get("sub_overrides") or {}
+    cur.update(upd)
+    clip_data["sub_overrides"] = cur
+    # сохраняем state.json чтобы правки переживали рестарт
+    job_path = WORK_DIR / job_id / "state.json"
+    if job_path.exists():
+        try:
+            job_path.write_text(json.dumps({**job.dict(), "clips": job.clips}, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+    return {"ok": True, "sub_overrides": clip_data["sub_overrides"]}
+
+
+@app.delete("/jobs/{job_id}/clips/{clip_index}/sub-overrides")
+async def delete_sub_overrides(job_id: str, clip_index: int):
+    """Сбросить все per-clip правки — вернуться к чистому пресету."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "job не найден")
+    if clip_index < 1 or clip_index > len(job.clips):
+        raise HTTPException(404, "клип не найден")
+    clip_data = job.clips[clip_index - 1]
+    clip_data.pop("sub_overrides", None)
+    return {"ok": True}
 
 
 @app.post("/jobs/{job_id}/clips/{clip_index}/regenerate-effects")
